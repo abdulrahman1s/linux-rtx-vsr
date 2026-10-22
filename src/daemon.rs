@@ -306,7 +306,7 @@ fn control_client(mut socket: UnixStream, shared: &Shared, port: u16) -> Result<
             }
             Some("grant") => {
                 shared.touch();
-                Ok(json!({"token":shared.grant()?,"port":port,"protocol":1}))
+                Ok(json!({"token":shared.grant()?,"port":port,"protocol":2}))
             }
             _ => bail!("Unknown control operation"),
         }
@@ -354,6 +354,10 @@ fn stream(
     let auth = ws.read()?;
     ensure!(auth.len() <= 2048, "Authentication message too large");
     let auth: Value = serde_json::from_str(auth.to_text()?)?;
+    if auth["protocol"] != 2 {
+        ws.send(Message::text(json!({"type":"error","message":"AV1 streaming requires matching application and extension versions; reload both"}).to_string()))?;
+        return Ok(());
+    }
     ensure!(
         shared.claim(auth["token"].as_str().unwrap_or("")),
         "Session authorization expired; enable enhancement again"
@@ -362,16 +366,26 @@ fn stream(
         config.max_message_size = Some(MAX_FRAME);
         config.max_frame_size = Some(MAX_FRAME);
     });
-    if shared
-        .streaming
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        ws.send(Message::text(
-            json!({"type":"error","message":"Another tab is enhancing. Disable it first."})
-                .to_string(),
-        ))?;
-        return Ok(());
+    // Removing an iframe closes its worker/socket asynchronously. Allow the
+    // previous session to release its lease during rapid seek/fullscreen
+    // restart, without taking over an active stream from another tab.
+    let lease_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if shared
+            .streaming
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            break;
+        }
+        if Instant::now() >= lease_deadline {
+            ws.send(Message::text(
+                json!({"type":"error","message":"Another tab is enhancing. Disable it first."})
+                    .to_string(),
+            ))?;
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
     }
     let _session = Session(shared.clone());
     let quality = auth["quality"].as_u64().context("Missing quality")?;
@@ -380,11 +394,16 @@ fn stream(
     let scale = auth["scale"].as_f64().context("Missing scale")?;
     crate::config::validate_settings(quality, scale)?;
     ws.send(Message::text(
-        json!({"type":"ready","protocol":1}).to_string(),
+        json!({"type":"ready","protocol":2}).to_string(),
     ))?;
     while !shared.stop.load(Ordering::Relaxed) {
         match ws.read()? {
             Message::Binary(bytes) => {
+                let received_wall_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs_f64()
+                    * 1000.;
+                let dispatch_at = Instant::now();
                 shared.touch();
                 let (reply, rx) = mpsc::sync_channel(1);
                 let job = Job {
@@ -398,7 +417,16 @@ fn stream(
                     break;
                 }
                 match rx.recv_timeout(Duration::from_secs(30))? {
-                    Ok((bytes, stats)) => {
+                    Ok((bytes, mut stats)) => {
+                        stats["response_bytes"] = json!(bytes.len());
+                        stats["received_wall_ms"] = json!(received_wall_ms);
+                        stats["dispatch_ms"] = json!(dispatch_at.elapsed().as_secs_f64() * 1000.);
+                        stats["completed_wall_ms"] = json!(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)?
+                                .as_secs_f64()
+                                * 1000.
+                        );
                         ws.send(Message::text(stats.to_string()))?;
                         ws.send(Message::Binary(bytes.into()))?;
                     }

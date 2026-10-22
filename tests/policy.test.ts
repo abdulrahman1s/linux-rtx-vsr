@@ -1,6 +1,26 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, shouldEnhance, freshState, originOf } from '../extension/src/policy.ts';
+import {
+  DEFAULTS,
+  settingsWithDefaults,
+  shouldEnhance,
+  freshState,
+  originOf,
+} from '../extension/src/policy.ts';
+test('YouTube defaults apply on upgrades while saved opt-outs and global disable survive', () => {
+  const defaults = settingsWithDefaults();
+  assert.equal(shouldEnhance(defaults, null, 'https://www.youtube.com/watch?v=test'), true);
+  assert.equal(shouldEnhance(defaults, null, 'https://m.youtube.com/shorts/test'), true);
+  assert.equal(shouldEnhance(defaults, null, 'https://youtube.com.evil.test'), false);
+  const saved = settingsWithDefaults(
+    JSON.parse(JSON.stringify({ sites: { 'https://www.youtube.com': false } })),
+  );
+  assert.equal(shouldEnhance(saved, null, 'https://www.youtube.com/watch?v=test'), false);
+  assert.equal(
+    shouldEnhance(settingsWithDefaults({ enabled: false }), null, 'https://youtube.com'),
+    false,
+  );
+});
 test('global off wins over both positive site rule and positive override', () => {
   const s = { ...DEFAULTS, enabled: false, sites: { 'https://example.com': true } };
   assert.equal(

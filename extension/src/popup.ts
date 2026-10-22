@@ -6,7 +6,7 @@ type PopupElements = {
   global: HTMLInputElement;
   automatic: HTMLInputElement;
   quality: HTMLSelectElement;
-  scale: HTMLSelectElement;
+  target: HTMLSelectElement;
   manual: HTMLButtonElement;
   follow: HTMLButtonElement;
 };
@@ -46,7 +46,7 @@ async function refresh() {
     $('automatic').disabled = !origin;
     $('origin').textContent = origin || 'Open an HTTP or HTTPS video page';
     $('quality').value = String(settings.quality);
-    $('scale').value = String(settings.scale);
+    $('target').value = String(settings.target);
     $('manual').textContent = policy.wanted ? 'Disable for this tab' : 'Enable for this tab';
     $('manual').disabled = !origin || !settings.enabled;
     $('follow').hidden = !override || override.origin !== origin;
@@ -89,8 +89,8 @@ $('manual').onclick = () =>
 $('global').onchange = () => act(() => request({ type: 'settings', enabled: $('global').checked }));
 $('quality').onchange = () =>
   act(() => request({ type: 'settings', quality: Number($('quality').value) }));
-$('scale').onchange = () =>
-  act(() => request({ type: 'settings', scale: Number($('scale').value) }));
+$('target').onchange = () =>
+  act(() => request({ type: 'settings', target: Number($('target').value) }));
 $('follow').onclick = () => act(() => request({ type: 'reset-override' }));
 $('automatic').onchange = () => {
   const enabled = $('automatic').checked;

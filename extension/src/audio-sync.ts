@@ -18,6 +18,23 @@ async function createBrowserGraph(video: HTMLVideoElement): Promise<AudioGraph> 
   ctx.getImageData(0, 0, 1, 1);
   const context = new AudioContext({ latencyHint: 'interactive' });
   try {
+    // Automatic rules can run before Web Audio has playback permission.
+    // Resume before attaching the irreversible source node to avoid silence.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        context.resume(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Play the video, then enable VSR again.')),
+            2000,
+          );
+        }),
+      ]);
+      if (context.state !== 'running') throw new Error('Audio needs a playback gesture.');
+    } finally {
+      clearTimeout(timer);
+    }
     const source = context.createMediaElementSource(video);
     const delay = context.createDelay(1);
     source.connect(delay).connect(context.destination);

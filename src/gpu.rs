@@ -1,4 +1,4 @@
-//! Minimal dynamically loaded C ABI for VFX 1.3 and nvJPEG. No Python or SDK
+//! Minimal dynamically loaded C ABI for VFX 1.3 and NVENC. No Python or CUDA
 //! headers are needed to build. All CUDA objects live on one OS thread.
 //! NvCVImage layout follows NVIDIA's MIT-licensed public header; see notices.
 use crate::{
@@ -33,11 +33,6 @@ struct Image {
     delete_ptr: Ptr,
     delete_proc: Option<unsafe extern "C" fn(Ptr)>,
     buffer_bytes: u64,
-}
-#[repr(C)]
-struct JpegImage {
-    channel: [*mut u8; 4],
-    pitch: [usize; 4],
 }
 
 macro_rules! api {
@@ -74,18 +69,49 @@ api!(Images {
     destroy: unsafe extern "C" fn(*mut Image) = "NvCVImage_Destroy",
     transfer: unsafe extern "C" fn(*const Image,*mut Image,f32,Ptr,*mut Image)->i32 = "NvCVImage_Transfer",
 });
-api!(Jpeg {
-    create: unsafe extern "C" fn(*mut Ptr)->i32 = "nvjpegCreateSimple",
-    destroy: unsafe extern "C" fn(Ptr)->i32 = "nvjpegDestroy",
-    state_create: unsafe extern "C" fn(Ptr,*mut Ptr,Ptr)->i32 = "nvjpegEncoderStateCreate",
-    state_destroy: unsafe extern "C" fn(Ptr)->i32 = "nvjpegEncoderStateDestroy",
-    params_create: unsafe extern "C" fn(Ptr,*mut Ptr,Ptr)->i32 = "nvjpegEncoderParamsCreate",
-    params_destroy: unsafe extern "C" fn(Ptr)->i32 = "nvjpegEncoderParamsDestroy",
-    quality: unsafe extern "C" fn(Ptr,i32,Ptr)->i32 = "nvjpegEncoderParamsSetQuality",
-    sampling: unsafe extern "C" fn(Ptr,i32,Ptr)->i32 = "nvjpegEncoderParamsSetSamplingFactors",
-    encode: unsafe extern "C" fn(Ptr,Ptr,Ptr,*const JpegImage,i32,i32,i32,Ptr)->i32 = "nvjpegEncodeImage",
-    retrieve: unsafe extern "C" fn(Ptr,Ptr,*mut u8,*mut usize,Ptr)->i32 = "nvjpegEncodeRetrieveBitstream",
+// Versioned NVENC structures live in the small, MIT-licensed C adapter.
+// These pointers and every NVIDIA symbol stay private to this module.
+unsafe extern "C" {
+    fn vsr_encoder_create(
+        create: unsafe extern "C" fn(Ptr) -> i32,
+        context: Ptr,
+        pixels: Ptr,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        qp: u32,
+        error: *mut c_char,
+        capacity: usize,
+    ) -> Ptr;
+    fn vsr_encoder_encode(
+        encoder: Ptr,
+        timestamp: u64,
+        bytes: *mut *const u8,
+        length: *mut usize,
+        error: *mut c_char,
+        capacity: usize,
+    ) -> i32;
+    fn vsr_encoder_release(encoder: Ptr, error: *mut c_char, capacity: usize) -> i32;
+    fn vsr_encoder_destroy(encoder: Ptr);
+}
+api!(Nvenc {
+    create: unsafe extern "C" fn(Ptr)->i32 = "NvEncodeAPICreateInstance",
 });
+fn encoder_error(error: &[c_char]) -> String {
+    // C adapter always terminates the supplied nonempty error buffer.
+    unsafe {
+        std::ffi::CStr::from_ptr(error.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+pub fn encoder_available() -> Result<()> {
+    // SAFETY: only resolve the NVENC entry point; creates no GPU objects.
+    unsafe {
+        Nvenc::open(Path::new("libnvidia-encode.so.1"))?;
+    }
+    Ok(())
+}
 fn check(code: i32, operation: &str) -> Result<()> {
     ensure!(
         code == 0,
@@ -97,16 +123,14 @@ pub struct Engine {
     cuda: Cuda,
     vfx: Vfx,
     images: Images,
-    jpeg: Jpeg,
+    nvenc: Nvenc,
     effect: Ptr,
     context: Ptr,
     input: *mut Image,
     output: *mut Image,
     staging: *mut Image,
-    rgb: *mut Image,
-    jpeg_handle: Ptr,
-    jpeg_state: Ptr,
-    jpeg_params: Ptr,
+    encoded: *mut Image,
+    encoder: Ptr,
     key: Option<(u32, u32, u32, u32, u32, u32)>,
     config: Config,
     // Preloaded feature libraries must outlive every SDK object.
@@ -154,51 +178,35 @@ impl Engine {
             }
             let vfx = Vfx::open(&config.sdk_dir.join("libVideoFX.so"))?;
             let images = Images::open(&config.sdk_dir.join("libNVCVImage.so"))?;
-            let jpeg = Jpeg::open(&config.jpeg_library)?;
+            let nvenc = Nvenc::open(Path::new("libnvidia-encode.so.1"))?;
             let mut e = Self {
                 cuda,
                 vfx,
                 images,
-                jpeg,
+                nvenc,
                 effect: null_mut(),
                 context: null_mut(),
                 input: null_mut(),
                 output: null_mut(),
                 staging: null_mut(),
-                rgb: null_mut(),
-                jpeg_handle: null_mut(),
-                jpeg_state: null_mut(),
-                jpeg_params: null_mut(),
+                encoded: null_mut(),
+                encoder: null_mut(),
                 key: None,
                 config: config.clone(),
                 _preloads: preloads,
             };
             check((e.cuda.retain)(&mut e.context, 0), "Retaining CUDA context")?;
             check((e.cuda.current)(e.context), "Selecting CUDA context")?;
-            check((e.jpeg.create)(&mut e.jpeg_handle), "nvJPEG initialization")?;
-            check(
-                (e.jpeg.state_create)(e.jpeg_handle, &mut e.jpeg_state, null_mut()),
-                "nvJPEG encoder initialization",
-            )?;
-            check(
-                (e.jpeg.params_create)(e.jpeg_handle, &mut e.jpeg_params, null_mut()),
-                "nvJPEG parameters",
-            )?;
-            check(
-                (e.jpeg.quality)(e.jpeg_params, config.jpeg_quality as i32, null_mut()),
-                "nvJPEG quality",
-            )?;
-            // 4:2:0 matches ordinary SDR video and reduces transport bandwidth.
-            check(
-                (e.jpeg.sampling)(e.jpeg_params, 2, null_mut()),
-                "nvJPEG sampling",
-            )?;
             Ok(e)
         }
     }
     fn clear(&mut self) {
         // SAFETY: owned SDK handles, null after destruction, context is current.
         unsafe {
+            if !self.encoder.is_null() {
+                vsr_encoder_destroy(self.encoder);
+                self.encoder = null_mut();
+            }
             if !self.effect.is_null() {
                 (self.vfx.destroy)(self.effect);
                 self.effect = null_mut();
@@ -207,7 +215,7 @@ impl Engine {
                 &mut self.input,
                 &mut self.output,
                 &mut self.staging,
-                &mut self.rgb,
+                &mut self.encoded,
             ] {
                 if !p.is_null() {
                     (self.images.destroy)(*p);
@@ -244,9 +252,23 @@ impl Engine {
                     "Allocating VFX output",
                 )?;
                 check(
-                    alloc(w, h, 4, 1, 0, 1, 0, &mut self.rgb),
-                    "Allocating JPEG input",
+                    alloc(w, h, 10, 1, 7, 1, 0, &mut self.encoded),
+                    "Allocating NVENC NV12 surface",
                 )?;
+                (*self.encoded).color = 1; // BT.709, limited range, cosited NV12.
+                let mut error = [0 as c_char; 1024];
+                self.encoder = vsr_encoder_create(
+                    self.nvenc.create,
+                    self.context,
+                    (*self.encoded).pixels,
+                    w,
+                    h,
+                    (*self.encoded).pitch as u32,
+                    self.config.encode_qp,
+                    error.as_mut_ptr(),
+                    error.len(),
+                );
+                ensure!(!self.encoder.is_null(), "{}", encoder_error(&error));
                 if frame.format != 0 {
                     check(
                         alloc(frame.width, frame.height, 10, 1, 7, 1, 0, &mut self.staging),
@@ -313,68 +335,46 @@ impl Engine {
                 )?;
             }
             check((self.cuda.sync)(), "Upload synchronization")?;
+            let upload_ms = start.elapsed().as_secs_f64() * 1000. - configured;
             let inference = Instant::now();
             check((self.vfx.run)(self.effect, 0), "VideoSuperRes inference")?;
             check((self.cuda.sync)(), "Inference synchronization")?;
             let inference_ms = inference.elapsed().as_secs_f64() * 1000.;
+            let encode = Instant::now();
             check(
-                transfer(self.output, self.rgb, 1., null_mut(), null_mut()),
-                "Converting output to RGB",
+                transfer(self.output, self.encoded, 1., null_mut(), null_mut()),
+                "Converting enhanced output to BT.709 NV12",
             )?;
-            let descriptor = JpegImage {
-                channel: [
-                    (*self.rgb).pixels.cast(),
-                    null_mut(),
-                    null_mut(),
-                    null_mut(),
-                ],
-                pitch: [(*self.rgb).pitch as usize, 0, 0, 0],
-            };
-            check(
-                (self.jpeg.encode)(
-                    self.jpeg_handle,
-                    self.jpeg_state,
-                    self.jpeg_params,
-                    &descriptor,
-                    5,
-                    w as i32,
-                    h as i32,
-                    null_mut(),
-                ),
-                "Encoding enhanced JPEG",
-            )?;
+            check((self.cuda.sync)(), "NVENC producer synchronization")?;
+            let mut error = [0 as c_char; 1024];
+            let mut packet = std::ptr::null();
             let mut length = 0;
-            check(
-                (self.jpeg.retrieve)(
-                    self.jpeg_handle,
-                    self.jpeg_state,
-                    null_mut(),
-                    &mut length,
-                    null_mut(),
-                ),
-                "Sizing JPEG",
-            )?;
-            check((self.cuda.sync)(), "Encoder synchronization")?;
             ensure!(
-                length > 0 && length <= crate::protocol::MAX_FRAME,
-                "Invalid encoded output size"
-            );
-            let mut bytes = vec![0u8; length];
-            check(
-                (self.jpeg.retrieve)(
-                    self.jpeg_handle,
-                    self.jpeg_state,
-                    bytes.as_mut_ptr(),
+                vsr_encoder_encode(
+                    self.encoder,
+                    frame.sequence as u64,
+                    &mut packet,
                     &mut length,
-                    null_mut(),
-                ),
-                "Downloading enhanced JPEG",
-            )?;
-            check((self.cuda.sync)(), "Output synchronization")?;
-            bytes.truncate(length);
+                    error.as_mut_ptr(),
+                    error.len()
+                ) == 0,
+                "{}",
+                encoder_error(&error)
+            );
+            let valid = !packet.is_null() && length > 0 && length <= crate::protocol::MAX_FRAME;
+            let bytes = if valid {
+                std::slice::from_raw_parts(packet, length).to_vec()
+            } else {
+                Vec::new()
+            };
+            let released = vsr_encoder_release(self.encoder, error.as_mut_ptr(), error.len());
+            ensure!(valid, "NVENC returned an invalid encoded packet");
+            ensure!(released == 0, "{}", encoder_error(&error));
+            let codec = crate::av1::codec_string(&bytes)?;
+            let encode_ms = encode.elapsed().as_secs_f64() * 1000.;
             Ok((
                 bytes,
-                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","format":"jpeg"}),
+                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"keyframe":true,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
             ))
         }
     }
@@ -396,15 +396,6 @@ impl Drop for Engine {
                 (self.cuda.sync)();
             }
             self.clear();
-            if !self.jpeg_params.is_null() {
-                (self.jpeg.params_destroy)(self.jpeg_params);
-            }
-            if !self.jpeg_state.is_null() {
-                (self.jpeg.state_destroy)(self.jpeg_state);
-            }
-            if !self.jpeg_handle.is_null() {
-                (self.jpeg.destroy)(self.jpeg_handle);
-            }
             if !self.context.is_null() {
                 (self.cuda.release)(0);
             }
@@ -416,7 +407,7 @@ impl Drop for Engine {
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "Requires a compatible NVIDIA GPU, driver, VFX 1.3 and nvJPEG runtime"]
+    #[ignore = "Requires a compatible NVIDIA GPU, driver, VFX 1.3 and AV1 NVENC"]
     fn nvidia_nv12_inference() {
         let config = crate::config::Paths::discover().unwrap().load().unwrap();
         let (w, h) = (640u32, 360u32);
@@ -433,12 +424,13 @@ mod tests {
         let mut engine = Engine::new(&config).unwrap();
         for format in 1u32..=3 {
             bytes[12..16].copy_from_slice(&format.to_le_bytes());
-            let (jpeg, stats) = engine.process(&bytes, 3, 2.).unwrap();
+            let (packet, stats) = engine.process(&bytes, 3, 2.).unwrap();
             assert_eq!(stats["width"], 1280);
             assert_eq!(stats["height"], 720);
-            assert!(jpeg.len() > 1000 && jpeg.starts_with(&[0xff, 0xd8]));
+            assert!(packet.len() > 100);
+            assert!(stats["codec"].as_str().unwrap().starts_with("av01.0."));
             std::fs::create_dir_all("test-results").unwrap();
-            std::fs::write(format!("test-results/nv12-{format}.jpg"), jpeg).unwrap();
+            std::fs::write(format!("test-results/nv12-{format}.obu"), packet).unwrap();
         }
     }
 }

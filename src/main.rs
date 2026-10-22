@@ -1,3 +1,4 @@
+mod av1;
 mod config;
 mod daemon;
 mod gpu;
@@ -59,6 +60,9 @@ enum Commands {
         width: u32,
         #[arg(long, default_value_t = 360)]
         height: u32,
+        /// Fit the source to a 720p/1080p/1440p/2160p/4320p output target.
+        #[arg(long, value_parser = ["720", "1080", "1440", "2160", "4320"])]
+        target: Option<String>,
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -140,8 +144,16 @@ fn run() -> Result<()> {
             frames,
             width,
             height,
+            target,
             output,
-        } => benchmark(&paths, frames, width, height, output.as_deref())?,
+        } => benchmark(
+            &paths,
+            frames,
+            width,
+            height,
+            target.as_deref().map(str::parse).transpose()?,
+            output.as_deref(),
+        )?,
     }
     Ok(())
 }
@@ -322,8 +334,8 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
                 .unwrap_or(0.);
             report(
                 "GPU 0 Tensor Core architecture",
-                capability >= 7.5,
-                "Initial target requires an RTX Turing or later GPU; run doctor --gpu to validate actual SDK support",
+                capability >= 8.9,
+                "AV1 streaming requires an RTX Ada or Blackwell GPU with AV1 NVENC; run doctor --gpu to validate actual support",
             );
         }
     }
@@ -349,15 +361,10 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
             ),
         );
     }
-    // SAFETY: only opens the configured library to check dynamic resolution.
-    let jpeg = unsafe { libloading::Library::new(&c.jpeg_library) };
     report(
-        "nvJPEG dynamic loader",
-        jpeg.is_ok(),
-        &format!(
-            "Set jpeg_library to libnvjpeg.so (CUDA 12/13). Loader: {:?}",
-            jpeg.err()
-        ),
+        "NVENC driver library",
+        gpu::encoder_available().is_ok(),
+        "Install the NVIDIA video encode driver library libnvidia-encode.so.1 and include it in the runtime driver search path",
     );
     let mut found = false;
     let mut manifests = Vec::new();
@@ -432,7 +439,7 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     );
     if gpu {
         println!("Running real cold-start NVIDIA inference (not a substitute scaler)...");
-        benchmark(paths, 3, 640, 360, None)?;
+        benchmark(paths, 3, 640, 360, None, None)?;
     }
     ensure!(
         failures == 0,
@@ -445,6 +452,7 @@ fn benchmark(
     frames: u32,
     width: u32,
     height: u32,
+    target: Option<u32>,
     output: Option<&Path>,
 ) -> Result<()> {
     ensure!((1..=10000).contains(&frames), "frames must be 1–10000");
@@ -453,6 +461,18 @@ fn benchmark(
         "Benchmark source must be 64×64 through 1920×1080"
     );
     let config = paths.load()?;
+    let scale = target.map_or(config.scale, |short| {
+        let long = f64::from(short) * 16. / 9.;
+        if width >= height {
+            (long / f64::from(width)).min(f64::from(short) / f64::from(height))
+        } else {
+            (f64::from(short) / f64::from(width)).min(long / f64::from(height))
+        }
+    });
+    ensure!(
+        scale >= 1.,
+        "Source already exceeds the selected output target"
+    );
     let mut bytes = vec![0; protocol::HEADER + width as usize * height as usize * 4];
     bytes[..4].copy_from_slice(b"RVS1");
     bytes[4..8].copy_from_slice(&width.to_le_bytes());
@@ -472,14 +492,15 @@ fn benchmark(
     let mut engine = gpu::Engine::new(&config)?;
     let load_ms = start.elapsed().as_secs_f64() * 1000.;
     let mut times = Vec::new();
-    let mut jpeg = Vec::new();
+    use std::io::Write;
+    let mut encoded_output = output.map(fs::File::create).transpose()?;
     let mut first_ms = 0.;
     let mut total_bytes = 0;
     for n in 0..frames {
         bytes[16..20].copy_from_slice(&n.to_le_bytes());
         bytes[24..32].copy_from_slice(&(n as f64 / 60.).to_le_bytes());
         let at = Instant::now();
-        let (b, _) = engine.process(&bytes, config.quality, config.scale)?;
+        let (b, _) = engine.process(&bytes, config.quality, scale)?;
         let ms = at.elapsed().as_secs_f64() * 1000.;
         if n == 0 {
             first_ms = ms;
@@ -487,13 +508,12 @@ fn benchmark(
             times.push(ms);
         }
         total_bytes += b.len();
-        jpeg = b;
+        if let Some(file) = &mut encoded_output {
+            file.write_all(&b)?;
+        }
     }
     let seconds = start.elapsed().as_secs_f64();
     times.sort_by(f64::total_cmp);
-    if let Some(path) = output {
-        fs::write(path, &jpeg)?;
-    }
     let p = |q: f64| {
         times
             .get(((times.len().saturating_sub(1)) as f64 * q).round() as usize)
@@ -502,7 +522,7 @@ fn benchmark(
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"version":env!("CARGO_PKG_VERSION"),"source":[width,height],"scale":config.scale,"quality":config.quality,"jpeg_quality":config.jpeg_quality,"frames":frames,"runtime_load_ms":load_ms,"first_frame_ms":first_ms,"warm_p50_ms":p(0.5),"warm_p95_ms":p(0.95),"overall_fps":frames as f64/seconds,"mean_output_bytes":total_bytes/frames as usize,"transport":"direct Rust SDK benchmark; excludes browser capture, transport, presentation and audio"})
+            &json!({"version":env!("CARGO_PKG_VERSION"),"source":[width,height],"scale":scale,"target":target,"quality":config.quality,"encode_qp":config.encode_qp,"format":"av1","frames":frames,"runtime_load_ms":load_ms,"first_frame_ms":first_ms,"warm_p50_ms":p(0.5),"warm_p95_ms":p(0.95),"overall_fps":frames as f64/seconds,"mean_output_bytes":total_bytes/frames as usize,"transport":"direct Rust SDK benchmark; excludes browser capture, transport, presentation and audio"})
         )?
     );
     Ok(())

@@ -4,16 +4,16 @@ Enhance browser video locally with **NVIDIA VideoSuperRes**, a Rust application,
 
 ## Compatibility
 
-The initial target is **Linux x86-64, Chromium 140+, and an NVIDIA RTX GPU** supported by NVIDIA VFX 1.3. An NVIDIA driver and separately installed VFX/nvJPEG runtime are required. This is the VideoSuperRes SDK effect, not a Linux driver switch.
+The initial target is **Linux x86-64, Chromium 140+, and an NVIDIA RTX GPU** supported by NVIDIA VFX 1.3. An NVIDIA driver and separately installed VFX runtime and the driver’s NVENC AV1 library are required. This is the VideoSuperRes SDK effect, not a Linux driver switch.
 
-| Configuration                                               | Validation                                                                                        |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| RTX 5090, driver 595.104.02, NixOS, VFX 1.3 / wheel 0.2.0.0 | Real Rust GPU inference verified; see [validation record](docs/validation.md) for browser results |
-| Chromium 155.0.8059.84                                      | Isolated browser integration tested; see validation record for scope                              |
-| Other RTX Turing / Ampere / Ada / Blackwell GPUs            | Expected with a compatible VFX runtime; not tested here                                           |
-| Google Chrome / Brave                                       | Native manifest installers included; playback compatibility unverified                            |
-| Other Linux distributions                                   | Expected with glibc 2.39+ for release binaries; source builds can use their host libc; unverified |
-| Firefox, ARM, protected video, HDR                          | Unsupported                                                                                       |
+| Configuration                                                | Validation                                                                                                                                      |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| RTX 5090, driver 595.104.02, NixOS, VFX 1.3 / wheel 0.2.0.0  | Real Rust GPU inference verified; see [validation record](docs/validation.md) for browser results                                               |
+| Chromium 148.0.7778.178; Brave Origin 1.97.59 / Chromium 155 | Visible AV1 playback tested on the host above; see [scope and measurements](docs/validation.md#av1-transport-and-resolution-targets-2026-10-22) |
+| Other RTX Ada / Blackwell GPUs with AV1 NVENC                | Expected with compatible VFX/AV1 NVENC; not tested here                                                                                         |
+| Google Chrome / other Brave builds                           | Native manifest installers included; playback compatibility unverified                                                                          |
+| Other Linux distributions                                    | Expected with glibc 2.39+ for release binaries; source builds can use their host libc; unverified                                               |
+| Firefox, ARM, RTX without AV1 encode, protected video, HDR   | Unsupported                                                                                                                                     |
 
 NVIDIA lists branch-specific minimum drivers for VSR (570.190+, 580.82+, or 590.44+) and describes its Linux SDK as server-oriented. Desktop integration is experimental. Review [runtime requirements and terms](docs/runtime.md) before installation.
 
@@ -39,17 +39,17 @@ For NixOS, use the [Nix instructions](docs/nix.md). For a conventional glibc Lin
    linux-rtx-vsr doctor --gpu
    ```
 
-   Bun 1.3.13+ and `unzip` are used only to download, verify, and extract runtime archives. The application and inference run in Rust. You can instead point configuration at an existing licensed SDK installation. No proprietary libraries or models are shipped in our release archives.
+   Bun 1.3.13+ and `unzip` are used only to download, verify, and extract runtime archives. The application and inference run in Rust. You can instead point configuration at an existing licensed SDK installation. NVENC comes from the installed NVIDIA driver. No nvJPEG or CUDA toolkit is required. No proprietary libraries or models are shipped in our release archives.
 
 ## Install the extension and enhance a video
 
-Open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the directory printed by `integration install` (normally `~/.local/share/linux-rtx-vsr/extension`). Pin **Linux RTX VSR** to the toolbar. Open an ordinary SDR video, start playback, click the toolbar icon, and choose **Enable for this tab**. The engine starts on demand.
+Open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the directory printed by `integration install` (normally `~/.local/share/linux-rtx-vsr/extension`). Pin **Linux RTX VSR** to the toolbar. On YouTube, start an SDR video: enhancement is enabled automatically by default. On other sites, start playback, click the toolbar icon and choose **Enable for this tab**. The engine starts on demand. Choose an **Output target** in the popup: 720p, 1080p, 1440p, 4K (default), or experimental 8K. Scaling is calculated for each source, preserving aspect ratio; videos already at or above the target use the original.
 
 Use `--browser chrome` or `--browser brave` for their standard profile roots. For a custom `--user-data-dir`, pass `--manifest-dir /absolute/user-data-dir/NativeMessagingHosts`. Flatpak/Snap browser sandboxes are not supported. Refresh already-open video pages after loading or updating the extension.
 
 ## Automatically enhance a site
 
-Open the extension on that site and enable **Always enable on this site**. Accept access to that site when Chromium asks. Rules persist across restarts and match the exact scheme and hostname. Other sites receive no automatic access. The largest visible top-level video is selected; embedded frames and shadow-root videos are not scanned.
+Open the extension on that site and enable **Always enable on this site**. Accept access to that site when Chromium asks. Rules persist across restarts and match the exact scheme and hostname. YouTube (www, bare and mobile HTTPS origins) has access by default; turn its rule off here to opt out permanently. Other sites receive no automatic access. The largest visible top-level video is selected; embedded frames and shadow-root videos are not scanned.
 
 The global switch takes priority. When it is on, a temporary **current-tab override** takes priority over the site rule. Choose **Follow site rule** to remove that override. Overrides last until the tab closes or the browser session ends and apply only to their saved origin. With no override or matching rule, enhancement stays off.
 
@@ -81,13 +81,13 @@ linux-rtx-vsr config set scale 1.5
 linux-rtx-vsr config path
 ```
 
-The extension quality/scale controls govern browser sessions; CLI defaults govern native benchmarks. Both offer AI Low–Ultra and 1.5×/2× output, capped at 3840×2160. No substitute scaler is used on failure. Restart the backend after changing native configuration. GPU objects unload after five idle seconds; the daemon exits after sixty. One tab can enhance at a time; other tabs receive a clear busy message.
+The extension offers AI Low–Ultra and source-independent output targets through 8K, including portrait bounds. Native benchmarks accept `--target 2160` for 4K or `--target 4320` for 8K. The CUDA AI → NVENC AV1 → worker WebCodecs VideoFrame path keeps enhanced pixels on the GPU; browser input still requires host staging. 8K is experimental, hardware-dependent, and may be slow or fail due to VRAM/model/encoder/decoder limits. No substitute scaler is used on failure. Restart the backend after changing native configuration. GPU objects unload after five idle seconds; the daemon exits after sixty. One tab can enhance at a time; other tabs receive a clear busy message.
 
 Configuration uses `$XDG_CONFIG_HOME/linux-rtx-vsr`, state/logs use `$XDG_STATE_HOME/linux-rtx-vsr`, and extension/runtime assets use `$XDG_DATA_HOME/linux-rtx-vsr`. Defaults follow the normal `~/.config`, `~/.local/state`, and `~/.local/share` locations.
 
 ## Source builds and development
 
-Install Rust 1.88+, Bun 1.3.13+, and a C linker. No NVIDIA SDK headers, Python application, or original-project checkout is required to build:
+Install Rust 1.88+, Bun 1.3.13+, and a C compiler/linker and ar. No NVIDIA SDK headers, Python application, or original-project checkout is required to build:
 
 ```sh
 cargo build --locked --release
@@ -136,13 +136,13 @@ See [development and browser tests](docs/development.md), [architecture](docs/ar
 ## Troubleshooting and limitations
 
 - **Native host not found:** run `integration install` for the correct browser/profile. Keep the installed executable at a stable path, then reload the extension.
-- **Runtime cannot load / GPU inference fails:** run `doctor --gpu`; check `sdk_dir`, `jpeg_library`, driver libraries, GPU support, and available VRAM. See [runtime setup](docs/runtime.md). NixOS must use the Nix instructions.
+- **Runtime cannot load / GPU inference fails:** run `doctor --gpu`; check `sdk_dir`, `libcuda.so.1`/`libnvidia-encode.so.1`, driver libraries, GPU support, and available VRAM. See [runtime setup](docs/runtime.md). NixOS must use the Nix instructions.
 - **Audio requires a gesture:** play the video and enable again. Browsers can block Web Audio until a playback gesture.
 - **Original video remains visible:** inspect the popup reason. Errors, stale frames, seeking, paused/hidden tabs, native video fullscreen, and oversized output restore the original.
 - **Video cannot be captured:** DRM, tainted/CORS-restricted video, embedded players, HDR, and unsupported color spaces cannot be processed. There is no protection bypass. Codec support depends on the browser; readable SDR decoded frames are required.
 - **Controls and captions:** DOM controls/captions above the video layer are preserved. Native controls temporarily bypass enhancement on hover/focus; native text tracks bypass it while showing. Picture-in-picture and direct video-element fullscreen show the original. Player-container fullscreen can include the overlay. Unusual stacking, transforms, clipping, or player layouts may require site-specific work.
 - **Audio synchronization:** a Web Audio delay follows measured processing age; pictures are scheduled against audible time. Device latency reporting and site behavior vary. Audible flash/beep validation on real audio hardware is still required. Once attached, the browser cannot detach a `MediaElementAudioSourceNode`; disabling removes the added delay, and refreshing fully restores the browser's original audio path.
-- **Performance:** capture stages pixels through host memory and output uses lossy GPU JPEG. This is not zero-copy, NVENC, or a promise of 4K60. Browser JPEG decode and transport can dominate. See measured and unmeasured items in the [validation record](docs/validation.md).
+- **Performance:** capture still stages pixels through host memory, while enhanced output uses NVENC AV1 and worker WebCodecs. Achievable frame rate depends on the whole capture/transport/decode/presentation path, not just inference time. See measured and unmeasured items in the [validation record](docs/validation.md).
 
 The native API listens only on loopback with exact extension-origin checking and expiring, single-use credentials. Pages never receive native credentials. There is no remote processing, telemetry, media URL fetching, or listening LAN endpoint. [Security details](docs/architecture.md#security).
 

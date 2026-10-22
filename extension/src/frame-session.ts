@@ -1,5 +1,6 @@
 import { errorMessage } from './errors.ts';
-// Capture, JPEG decoding and presentation stay off the page's main thread.
+import { createPacketDecoder, type PacketDecoder } from './video-decoder.ts';
+// NVENC AV1 decoding and presentation stay off the page's main thread.
 import type {
   WorkerInit,
   ClockMessage,
@@ -11,7 +12,7 @@ export interface FrameEnvironment {
   now(): number;
   schedule(callback: () => void): void;
   connect(url: string): WebSocket;
-  decode(data: ArrayBuffer): Promise<ImageBitmap>;
+  createDecoder(): PacketDecoder;
 }
 const browser: FrameEnvironment = {
   now: () => performance.timeOrigin + performance.now(),
@@ -20,27 +21,28 @@ const browser: FrameEnvironment = {
       ? void requestAnimationFrame(callback)
       : void setTimeout(callback, 8),
   connect: (url) => new WebSocket(url),
-  decode: (data) => createImageBitmap(new Blob([data], { type: 'image/jpeg' })),
+  createDecoder: createPacketDecoder,
 };
 // Owns transport, bounded decode queue, fresh presentation and cancellation.
 // The worker and tests cross the same seam; browser facilities vary via env.
 export function startFrameSession(init: WorkerInit, env: FrameEnvironment = browser): () => void {
   const { port, canvas, auth, quality, scale } = init;
+  const decoder = env.createDecoder();
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
   if (!ctx) throw new Error('Browser cannot create the presentation canvas');
   let ws: WebSocket,
-    inFlight = false,
     ready = false,
     epoch = 0;
   let clock: ClockMessage | null = null,
     pending: FrameMetadata | null = null;
-  let queue: { bitmap: ImageBitmap; meta: FrameMetadata }[] = [],
+  let queue: { bitmap: VideoFrame; meta: FrameMetadata; decodedAt: number }[] = [],
     stopped = false;
   let presented = 0,
     dropped = 0,
     lastPresented = 0,
     startupMs: number | null = null;
   const { now } = env;
+  const inFlight = new Map<number, { sentAt: number; captureMs: number }>();
   const started = now();
   function send(value: FrameMessage) {
     port?.postMessage(value);
@@ -54,16 +56,19 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     queue = [];
   }
   function closeAll() {
+    if (stopped) return;
     stopped = true;
     ready = false;
     flush();
+    inFlight.clear();
+    decoder.close();
     ws?.close();
   }
   port.onmessage = receive;
   port.start();
   ws = env.connect(`ws://127.0.0.1:${auth.port}/v1/stream`);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({ token: auth.token, quality, scale }));
+  ws.onopen = () => ws.send(JSON.stringify({ token: auth.token, quality, scale, protocol: 2 }));
   ws.onerror = () => fail('Cannot connect to the local engine. Run linux-rtx-vsr doctor.');
   ws.onclose = () => {
     if (!stopped)
@@ -74,6 +79,10 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       try {
         const value = JSON.parse(event.data);
         if (value.type === 'ready') {
+          if (value.protocol !== 2)
+            throw new Error(
+              'Streaming protocol changed; update the native application and extension together',
+            );
           ready = true;
           send({ type: 'ready' });
         } else if (value.type === 'error') fail(value.message);
@@ -83,21 +92,36 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       }
       return;
     }
+    const meta = pending;
+    pending = null;
     try {
-      const meta = pending;
-      pending = null;
-      if (!meta || !inFlight)
+      const capture = meta && inFlight.get(meta.sequence);
+      if (!meta || !capture)
         throw new Error('Frame protocol mismatch; update the extension and application together');
-      const bitmap = await env.decode(event.data);
+      const receivedAt = now();
+      meta.request_ms =
+        meta.received_wall_ms === undefined ? undefined : meta.received_wall_ms - capture.sentAt;
+      meta.response_ms =
+        meta.completed_wall_ms === undefined ? undefined : receivedAt - meta.completed_wall_ms;
+      const bitmap = await decoder.decode(event.data, meta);
+      meta.decode_ms = now() - receivedAt;
+      meta.round_trip_ms = receivedAt - capture.sentAt;
+      meta.capture_ms = capture.captureMs;
       if (stopped || meta.epoch !== epoch) {
         bitmap.close();
         return;
       }
-      if (queue.length >= 8) {
+      // Up to eight GPU pictures, further limited to ~256 MiB of NV12 pixels.
+      // Browser decoder surfaces add their own implementation-specific memory.
+      const capacity = Math.max(
+        1,
+        Math.min(8, Math.floor((256 * 1024 * 1024) / (meta.width * meta.height * 1.5))),
+      );
+      if (queue.length >= capacity) {
         queue.shift()!.bitmap.close();
         dropped++;
       }
-      queue.push({ bitmap, meta });
+      queue.push({ bitmap, meta, decodedAt: now() });
       const mediaNow = clock
         ? clock.input + ((now() - clock.at) * clock.rate) / 1000
         : meta.timestamp;
@@ -106,10 +130,10 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         ageMs: Math.max(0, ((mediaNow - meta.timestamp) * 1000) / (clock?.rate || 1)),
       });
     } catch (error) {
-      fail(errorMessage(error));
+      if (!stopped) fail(errorMessage(error));
     } finally {
-      inFlight = false;
-      send({ type: 'available' });
+      if (meta) inFlight.delete(meta.sequence);
+      if (!stopped) send({ type: 'available' });
     }
   };
   tick();
@@ -129,16 +153,17 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       return;
     }
     if (value.type !== 'capture') return;
-    if (!ready || inFlight || stopped || value.epoch !== epoch) {
+    if (!ready || inFlight.size >= 2 || stopped || value.epoch !== epoch) {
       send({ type: 'available' });
       return;
     }
-    inFlight = true;
     try {
+      if (inFlight.has(value.sequence)) throw new Error('Duplicate captured sequence');
+      inFlight.set(value.sequence, { sentAt: now(), captureMs: value.captureMs });
       ws.send(value.buffer);
       sendRecycle(value.buffer);
     } catch (error) {
-      inFlight = false;
+      inFlight.delete(value.sequence);
       fail(`Cannot capture this video: ${errorMessage(error)}`);
     }
   }
@@ -163,11 +188,14 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         const lateness = (audible - selected.meta.timestamp) / clock.rate;
         if (lateness <= 0.08) {
           const { bitmap, meta } = selected;
-          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
+          if (canvas.width !== meta.width || canvas.height !== meta.height) {
+            canvas.width = meta.width;
+            canvas.height = meta.height;
           }
+          const drawingAt = now();
           ctx!.drawImage(bitmap, 0, 0);
+          meta.draw_ms = now() - drawingAt;
+          meta.presentation_wait_ms = time - selected.decodedAt;
           lastPresented = time;
           presented++;
           startupMs ??= time - started;

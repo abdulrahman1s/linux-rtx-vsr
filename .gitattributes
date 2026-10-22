@@ -1,0 +1,2 @@
+# Preserve the vendored upstream header byte for byte, including its final blank line.
+native/nvEncodeAPI.h whitespace=-blank-at-eof

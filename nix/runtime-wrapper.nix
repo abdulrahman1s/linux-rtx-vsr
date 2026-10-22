@@ -6,7 +6,8 @@
   stdenv,
   package,
   runtime,
-  jpegPackage,
+  # Compatibility with older downstream callPackage overrides; never forced.
+  jpegPackage ? null,
   driverLibraryPaths ? [ "/run/opengl-driver/lib" ],
 }:
 symlinkJoin {
@@ -17,7 +18,6 @@ symlinkJoin {
     wrapProgram $out/bin/linux-rtx-vsr \
       --set-default LINUX_RTX_VSR_EXECUTABLE "$out/bin/linux-rtx-vsr" \
       --set-default LINUX_RTX_VSR_SDK_DIR ${lib.escapeShellArg "${runtime}/nvvfx/libs"} \
-      --set-default LINUX_RTX_VSR_JPEG_LIBRARY ${lib.escapeShellArg "${lib.getLib jpegPackage}/lib/libnvjpeg.so"} \
       --prefix LD_LIBRARY_PATH : ${
         lib.escapeShellArg (
           lib.concatStringsSep ":" ([ (lib.makeLibraryPath [ stdenv.cc.cc.lib ]) ] ++ driverLibraryPaths)

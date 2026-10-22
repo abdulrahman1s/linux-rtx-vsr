@@ -177,7 +177,8 @@ pkgs.runCommand "linux-rtx-vsr-module-checks" { } ''
   ${commonRuntime.manifest.path} > runtime-environment
   grep -Fx "${lib.getExe commonRuntime.package}" runtime-environment
   grep -Fx "${fakePackage}/nvvfx/libs" runtime-environment
-  grep -Fx "${fakePackage}/lib/libnvjpeg.so" runtime-environment
+  # A legacy jpegPackage setting must not add nvJPEG to the runtime closure.
+  test -z "$(${pkgs.gnugrep}/bin/grep LINUX_RTX_VSR_JPEG_LIBRARY ${lib.getExe commonRuntime.package} || true)"
   grep -F "/custom/driver path" runtime-environment
   # Verify that the generated runtime wrapper binds all three persistent paths.
   grep -F LINUX_RTX_VSR_EXECUTABLE ${lib.getExe commonRuntime.package}

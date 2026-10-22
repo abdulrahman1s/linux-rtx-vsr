@@ -7,7 +7,12 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAteWom9nmxc4KnCyL05HzU12Y5napkPqNvT80QInHWL9opOEkDK9/KMrkhY1WSA+wwt4Hd+aGHp9mVv9CcJZK1dZAlNrWVtRSuLA+Zfnr3JJItEZsmMKsspKl8pPIwTfrlpKO4zPlNOikoX2EOOuQcylZGcpDSkjlaa2AOvj4AH7fRoyasb5FG3rsAyhL1pRiejsKDWRDt+g7w5N6j6jljobdYQaL38vTvOpHIQCqX8bX5DsgobZBilXBMKioud06+mgHKTAMcLjaO2qskUCY71xeBijnUeD0lTI93N8dxN2vA5654n7sJjCVN62ZiEkSC37Z17CezyvTSo7OtaVRdQIDAQAB",
   "permissions": ["activeTab", "scripting", "storage", "nativeMessaging"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
-  "host_permissions": ["http://127.0.0.1/*"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://www.youtube.com/*",
+    "https://youtube.com/*",
+    "https://m.youtube.com/*"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"

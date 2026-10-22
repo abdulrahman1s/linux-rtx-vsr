@@ -97,9 +97,8 @@ Leaving `settings = { };` (the default) keeps native configuration user-managed.
 | `browsers.chrome.package`             | `pkgs.google-chrome`           | Chrome package override; requires unfree acceptance unless overridden                   |
 | `browsers.brave.enable`               | `false`                        | Install Brave and register its native host                                              |
 | `browsers.brave.package`              | `pkgs.brave`                   | Brave package override; `null` registers without installing                             |
-| `runtime.enable`                      | `false`                        | Wrap the app with packaged VFX/nvJPEG paths; explicitly opt into unfree runtime         |
+| `runtime.enable`                      | `false`                        | Wrap the app with packaged VFX/NVENC paths; explicitly opt into unfree runtime          |
 | `runtime.package`                     | Pinned NVIDIA VFX package      | Override runtime root containing `nvvfx/libs`                                           |
-| `runtime.jpegPackage`                 | `pkgs.cudaPackages.libnvjpeg`  | Override nvJPEG library package                                                         |
 | `runtime.driverLibraryPaths`          | `[ "/run/opengl-driver/lib" ]` | Persistent driver search paths; useful outside NixOS                                    |
 | `settings` (Home Manager only)        | `{ }`                          | Optional typed declarative native settings                                              |
 
@@ -116,9 +115,11 @@ Set a browser's `package = null;` if your system or another module already manag
 
 The previous list syntax is replaced by these browser attributes. For example, replace `browsers = [ "chromium" ];` with `browsers.chromium.enable = true;`.
 
-Home Manager settings accept `quality` (1–4), `scale` (1.5/2.0), `jpeg_quality` (70–100), `gpu_idle_seconds` (1–60), `idle_seconds` (10–3600), `sdk_dir`, `jpeg_library`, and `model_dir`. Omitted/null fields use application defaults. GPU idle must be less than backend idle. Packaged-runtime SDK/nvJPEG environment paths take precedence over their configuration fields. Leave `runtime.enable = false` when providing your own SDK and nvJPEG configuration.
+Home Manager settings accept `quality` (1–4), native-benchmark `scale` (1–120), `encode_qp` (0–51, default 14), `gpu_idle_seconds` (1–60), `idle_seconds` (10–3600), `sdk_dir`, and `model_dir`. Browser sessions select a resolution target in the popup instead of the native benchmark scale. Legacy `jpeg_library`, `jpeg_quality` and `runtime.jpegPackage` settings are accepted but ignored; nvJPEG is no longer installed or loaded. Omitted/null fields use application defaults. GPU idle must be less than backend idle. Packaged-runtime SDK environment paths take precedence over their configuration fields. Leave `runtime.enable = false` when providing your own SDK configuration.
 
 ### Migration, updates and removal
+
+The downstream `linux-rtx-vsr-brave.patch` and YouTube-default patch are integrated into the source. Remove those patch entries when updating a separately maintained Nix derivation. Legacy `jpegPackage` wrapper arguments are accepted and ignored; the wrapper no longer installs nvJPEG.
 
 Before switching from the CLI installer, stop the backend and run `linux-rtx-vsr integration remove --browser chromium` for each previously installed browser. This removes CLI-owned manifests that could shadow the system-wide ones. Back up an existing `config.json` before adopting Home Manager `settings`; Home Manager reports existing-file collisions instead of overwriting your data. Likewise move an existing exported `~/.local/share/linux-rtx-vsr/extension` aside before Home Manager takes ownership. Load the module's extension path once after migration.
 
@@ -144,9 +145,9 @@ For a one-off test:
 NIXPKGS_ALLOW_UNFREE=1 nix run --impure .#with-runtime -- doctor --gpu
 ```
 
-`with-runtime` and `nvidia-runtime` live under `legacyPackages.x86_64-linux` to keep their unfree evaluation out of ordinary `nix flake check`. Nix resolves these names for `nix build`, `nix run`, and `nix profile add`. The default build does not include the runtime. The wrapper supplies VFX 1.3 and nvJPEG library paths and registers itself as the native executable, so on-demand browser startup retains the runtime environment.
+`with-runtime` and `nvidia-runtime` live under `legacyPackages.x86_64-linux` to keep their unfree evaluation out of ordinary `nix flake check`. Nix resolves these names for `nix build`, `nix run`, and `nix profile add`. The default build does not include the runtime. The wrapper supplies VFX 1.3 and host driver library paths and registers itself as the native executable, so on-demand browser startup retains the runtime environment.
 
-The VFX runtime is extracted from a SHA-256-pinned NVIDIA archive. NVIDIA signed `libnvidia-ngx-*` objects remain untouched. Only other libraries receive Nix runtime-path fixes. The package disables substitutes/distribution for the proprietary closure; do not push it to public binary caches without independent redistribution rights. CUDA nvJPEG is a separate unfree nixpkgs dependency.
+The VFX runtime is extracted from a SHA-256-pinned NVIDIA archive. NVIDIA signed `libnvidia-ngx-*` objects remain untouched. Only other libraries receive Nix runtime-path fixes. The package disables substitutes/distribution for the proprietary closure; do not push it to public binary caches without independent redistribution rights. NVENC is loaded from the host driver; nvJPEG is not required.
 
 The optional runtime downloads from NVIDIA's index at build time via a fixed-output fetch. A private network, NVIDIA access restriction, or removed upstream archive can prevent the build; use an entitled, verified archive in that case. Application builds remain independent of download access.
 
@@ -170,7 +171,7 @@ The modules above manage store paths declaratively, so they do not need a manual
 
 ## Nix on another distribution
 
-Keep the distribution's NVIDIA driver. Its `libcuda.so.1` must be discoverable inside the launched application. Unlike NixOS, `/run/opengl-driver/lib` may not exist. Export the actual driver path before installing/running the wrapper, or create a stable wrapper that supplies it. Some distributions require nixGL for graphics programs; the native backend uses the CUDA driver, so verify `doctor --gpu` first rather than assuming nixGL is necessary. This combination has not been tested here.
+Keep the distribution's NVIDIA driver. Its `libcuda.so.1` and `libnvidia-encode.so.1` must be discoverable inside the launched application. Unlike NixOS, `/run/opengl-driver/lib` may not exist. Export the actual driver path before installing/running the wrapper, or create a stable wrapper that supplies it. Some distributions require nixGL for graphics programs; the native backend uses the CUDA driver, so verify `doctor --gpu` first rather than assuming nixGL is necessary. This combination has not been tested here.
 
 If you create your own wrapper, register that stable wrapper with `LINUX_RTX_VSR_EXECUTABLE=/absolute/wrapper linux-rtx-vsr integration install ...`. The browser does not inherit arbitrary terminal environment changes after registration; put persistent requirements in the wrapper itself.
 
@@ -179,3 +180,5 @@ Home Manager can also manage integration on another distribution. Set `runtime.d
 ## Module validation
 
 `nix flake check` evaluates both real module systems, including disabled modules and browser entries, all three browser registrations and package overrides, Chromium/Brave package defaults, registration-only mode, extension origin restrictions, Home Manager settings/defaults and invalid idle-time assertions. A free fixture exercises runtime wrapping without downloading proprietary code. The package build and Rust tests also check that declarative configuration cannot be replaced through the CLI. These checks do not activate a host configuration or prove a browser on another distribution supports enhancement.
+
+The AV1 transport requires an AV1-encoding RTX Ada/Blackwell GPU. Nix supplies no proprietary encoder implementation: NVENC is part of your host NVIDIA driver. 8K is an experimental popup target; model, encoder, decoder, memory and display support must be checked on the actual host.

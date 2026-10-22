@@ -6,7 +6,7 @@ The project's original Rust, JavaScript, packaging, and documentation are MIT-li
 
 Source: <https://github.com/maxiarat1/linux-nvidia-vsr>, inspected commit `5766a6e56a4eb1b134c6d00cbf363c592ad48c61`.
 
-`extension/src/audio-sync.ts` and `extension/src/presentation-clock.ts` are adapted from that project's MIT-licensed timing code. The architecture also applies its published lessons about audible timing, bounded queues, visible iframe ownership, cold CUDA initialization, and stacking order. Copyright (c) 2026 maxiarat1 and contributors. The complete license is retained in `licenses/linux-nvidia-vsr-MIT.txt`. Other extension and backend code is independently implemented.
+`extension/src/audio-sync.ts`, `extension/src/presentation-clock.ts`, and `src/av1.rs` are adapted from that project's MIT-licensed timing code. The architecture also applies its published lessons about audible timing, bounded queues, visible iframe ownership, cold CUDA initialization, and stacking order. Copyright (c) 2026 maxiarat1 and contributors. The complete license is retained in `licenses/linux-nvidia-vsr-MIT.txt`. The AV1 parser adapts upstream `vsr_service/av1.py`. The NVENC adapter is independently implemented against the public C interface, preserving upstream’s no-extra-queue, independent-keyframe design.
 
 ## qsh
 
@@ -20,8 +20,12 @@ The `NvCVImage` C ABI layout in `src/gpu.rs` follows the public MIT-licensed `nv
 
 ## Separately installed NVIDIA runtime
 
-VFX 1.3 (distributed in NVIDIA's `nvidia-vfx` 0.2.0.0 archive), CUDA/nvJPEG, drivers, and models retain their own licenses. The runtime installer verifies pinned downloads and retains their license files. The VFX Python module is not extracted or executed. Download availability does not establish your entitlement or redistribution rights. See NVIDIA's [VFX catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/collections/maxine_vfx_sdk), [VSR collection](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/collections/nvvfxvideosuperres), and the agreements shipped in those archives.
+VFX 1.3 (distributed in NVIDIA's `nvidia-vfx` 0.2.0.0 archive), CUDA dependencies, NVENC drivers, and models retain their own licenses. The runtime installer verifies pinned downloads and retains their license files. The VFX Python module is not extracted or executed. Download availability does not establish your entitlement or redistribution rights. See NVIDIA's [VFX catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/collections/maxine_vfx_sdk), [VSR collection](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/collections/nvvfxvideosuperres), and the agreements shipped in those archives.
 
 Do not publish optional unfree Nix runtime closures to a binary cache without separately establishing redistribution rights. Signed `libnvidia-ngx-*` files must never be stripped or patched; changing RPATHs invalidates their signatures. The optional Nix runtime explicitly excludes these files from ELF patching.
 
 Rust and development dependencies retain their respective upstream licenses. `Cargo.lock` and `bun.lock` record exact versions. Native release/Nix packages collect the actual locked Rust dependency license and notice files into `licenses/rust-dependencies.txt`; the extension has its own bundled notices. Development-only Playwright is not included in the application/extension archives. Browser fixtures are generated locally with FFmpeg; no third-party video is distributed.
+
+## NVIDIA NVENC declarations
+
+`native/nvEncodeAPI.h` is unmodified from [nv-codec-headers n13.0.19.0](https://github.com/FFmpeg/nv-codec-headers/blob/n13.0.19.0/include/ffnvcodec/nvEncodeAPI.h), Copyright (c) 2010–2024 NVIDIA Corporation, MIT. Its notice remains in the header and `licenses/NVIDIA-NVENC-MIT.txt` in binary packages. This header does not contain a proprietary encoder implementation. `native/nvenc.c` compiles into the Rust executable; the actual `libnvidia-encode.so.1` must be installed separately with the NVIDIA driver.

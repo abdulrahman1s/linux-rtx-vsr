@@ -60,7 +60,6 @@
       withRuntime = pkgs.callPackage ./nix/runtime-wrapper.nix {
         package = application;
         inherit runtime;
-        jpegPackage = pkgs.cudaPackages.libnvjpeg;
       };
     in
     {

@@ -10,14 +10,18 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub sdk_dir: PathBuf,
-    pub jpeg_library: PathBuf,
+    // Accepted solely for upgrading old configuration; JPEG is no longer used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_library: Option<PathBuf>,
     pub model_dir: Option<PathBuf>,
     pub extension_id: Option<String>,
     pub idle_seconds: u64,
     pub gpu_idle_seconds: u64,
     pub quality: u32,
     pub scale: f64,
-    pub jpeg_quality: u32,
+    pub encode_qp: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_quality: Option<u32>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -25,14 +29,15 @@ impl Default for Config {
             sdk_dir: dirs::data_local_dir()
                 .unwrap_or_default()
                 .join("linux-rtx-vsr/runtime/nvvfx/libs"),
-            jpeg_library: "libnvjpeg.so".into(),
+            jpeg_library: None,
             model_dir: None,
             extension_id: None,
             idle_seconds: 60,
             gpu_idle_seconds: 5,
             quality: 3,
             scale: 2.0,
-            jpeg_quality: 94,
+            encode_qp: 14,
+            jpeg_quality: None,
         }
     }
 }
@@ -52,8 +57,8 @@ impl Config {
         );
         validate_settings(self.quality, self.scale)?;
         ensure!(
-            (70..=100).contains(&self.jpeg_quality),
-            "jpeg_quality must be 70–100"
+            self.encode_qp <= 51,
+            "encode_qp must be 0–51 (lower improves AV1 quality and increases bandwidth)"
         );
         if let Some(id) = &self.extension_id {
             validate_id(id)?;
@@ -73,7 +78,10 @@ pub fn validate_settings(quality: u32, scale: f64) -> Result<()> {
         (1..=4).contains(&quality),
         "AI quality must be 1 (low) through 4 (ultra)"
     );
-    ensure!([1.5, 2.0].contains(&scale), "scale must be 1.5 or 2");
+    ensure!(
+        scale.is_finite() && (1.0..=120.0).contains(&scale),
+        "scale must be finite and between 1 and 120; output is bounded to an 8K landscape/portrait frame"
+    );
     Ok(())
 }
 #[derive(Clone)]
@@ -117,9 +125,6 @@ impl Paths {
         };
         if let Some(dir) = std::env::var_os("LINUX_RTX_VSR_SDK_DIR") {
             c.sdk_dir = dir.into();
-        }
-        if let Some(path) = std::env::var_os("LINUX_RTX_VSR_JPEG_LIBRARY") {
-            c.jpeg_library = path.into();
         }
         c.validate()?;
         Ok(c)
@@ -228,7 +233,7 @@ mod tests {
             p.load().unwrap().model_dir.unwrap(),
             PathBuf::from("/models with spaces")
         );
-        assert!(p.set("scale", "3").is_err());
+        assert!(p.set("scale", "0.5").is_err());
         assert!(p.set("surprise", "1").is_err());
         assert_eq!(
             fs::metadata(p.config.join("config.json"))

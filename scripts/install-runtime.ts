@@ -10,9 +10,6 @@ export { extractVerifiedZip as extract } from './archive.ts';
 const VFX_URL =
   'https://pypi.nvidia.com/nvidia-vfx/nvidia_vfx-0.2.0.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl';
 const VFX_SHA256 = '0252866a7b798a6f92c8543443d88f716e8c5bbc6a7ddd77a2754728dada9fa8';
-const JPEG_URL =
-  'https://files.pythonhosted.org/packages/8c/7f/6eefe12155c38a647297d8cf4a0eb159f3072981bc8dba6ce211cd686936/nvidia_nvjpeg-13.1.0.59-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl';
-const JPEG_SHA256 = '331223cfcd8c618d8d6adb56b2c128f8e3406be5fcab5f6aeff9291e18a52a35';
 async function download(url: string, file: string) {
   console.log(`Downloading ${url.split('/').at(-1)}…`);
   const response = await fetch(url, { signal: AbortSignal.timeout(45 * 60 * 1000) });
@@ -50,17 +47,11 @@ async function main() {
   try {
     const vfx = values['vfx-archive'] || path.join(staging, 'vfx.whl');
     if (!values['vfx-archive']) await download(VFX_URL, vfx);
-    const jpeg = path.join(staging, 'jpeg.whl');
-    await download(JPEG_URL, jpeg);
     const out = path.join(staging, 'extracted');
     await extractVerifiedZip(vfx, out, VFX_SHA256, [
       'nvvfx/libs/',
       'nvidia_vfx.libs/',
       'nvidia_vfx-0.2.0.0.dist-info/licenses/',
-    ]);
-    await extractVerifiedZip(jpeg, out, JPEG_SHA256, [
-      'nvidia/nvjpeg/',
-      'nvidia_nvjpeg-13.1.0.59.dist-info/licenses/',
     ]);
     for (const name of await readdir(path.join(out, 'nvvfx/libs'))) {
       if (!name.includes('.so.')) continue;
@@ -77,10 +68,7 @@ async function main() {
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
-  for (const [key, file] of [
-    ['sdk_dir', 'nvvfx/libs'],
-    ['jpeg_library', 'nvidia/nvjpeg/lib/libnvjpeg.so.13'],
-  ]) {
+  for (const [key, file] of [['sdk_dir', 'nvvfx/libs']]) {
     execFileSync(values.binary!, ['config', 'set', key!, path.join(runtime, file!)], {
       stdio: 'inherit',
     });

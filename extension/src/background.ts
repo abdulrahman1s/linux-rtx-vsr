@@ -1,15 +1,14 @@
 import { errorMessage } from './errors.ts';
 import type { RuntimeRequest, Settings, TabOverride, PlaybackStatus } from './protocol.ts';
-import { DEFAULTS, shouldEnhance, originOf, STATES, freshState } from './policy.ts';
+import { settingsWithDefaults, shouldEnhance, originOf, STATES, freshState } from './policy.ts';
 const HOST = 'io.github.abdulrahman1s.linux_rtx_vsr';
 const SCRIPTS = ['content.js'];
 const claims = new Map<string, { tab: number; at: number }>();
 const freshnessTimers = new Map<number, ReturnType<typeof setTimeout>>();
 async function settings(): Promise<Settings> {
-  return {
-    ...DEFAULTS,
-    ...(await chrome.storage.local.get<{ settings?: Settings }>('settings')).settings,
-  };
+  return settingsWithDefaults(
+    (await chrome.storage.local.get<{ settings?: Settings }>('settings')).settings,
+  );
 }
 async function override(tabId: number): Promise<TabOverride | undefined> {
   return (
@@ -158,8 +157,8 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
       throw new Error('Site permission was not granted');
     const config = await settings();
     config.sites = { ...config.sites };
-    if (message.enabled) config.sites[origin] = true;
-    else delete config.sites[origin];
+    // Persist false, so a default YouTube rule never resurrects an opt-out.
+    config.sites[origin] = message.enabled;
     await chrome.storage.local.set({ settings: config });
     await chrome.storage.session.remove(`override:${tab.id}`);
     await syncSites();
@@ -172,7 +171,8 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
     if (typeof message.enabled === 'boolean') config.enabled = message.enabled;
     if ([1, 2, 3, 4].includes(message.quality ?? 0))
       config.quality = message.quality as Settings['quality'];
-    if ([1.5, 2].includes(message.scale ?? 0)) config.scale = message.scale as Settings['scale'];
+    if ([720, 1080, 1440, 2160, 4320].includes(message.target ?? 0))
+      config.target = message.target as Settings['target'];
     await chrome.storage.local.set({ settings: config });
     await notifyTabs();
     return {};

@@ -12,7 +12,12 @@ assert.deepEqual(
   manifest.permissions.toSorted(),
   ['activeTab', 'nativeMessaging', 'scripting', 'storage'].toSorted(),
 );
-assert.equal(manifest.host_permissions.length, 1);
+assert.deepEqual(manifest.host_permissions, [
+  'http://127.0.0.1/*',
+  'https://www.youtube.com/*',
+  'https://youtube.com/*',
+  'https://m.youtube.com/*',
+]);
 for (const asset of [
   manifest.background.service_worker,
   manifest.action.default_popup,

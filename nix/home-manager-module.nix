@@ -37,14 +37,12 @@ in
       type = lib.types.submodule {
         options = {
           sdk_dir = optional lib.types.str "Existing VFX library directory when not using the packaged runtime.";
-          jpeg_library = optional lib.types.str "Existing nvJPEG library path.";
+          jpeg_library = optional lib.types.str "Deprecated, ignored; retained for upgrading old configurations.";
           model_dir = optional lib.types.str "Optional external NVIDIA model directory.";
           quality = optional (lib.types.ints.between 1 4) "Default AI quality, 1 through 4.";
-          scale = optional (lib.types.enum [
-            1.5
-            2.0
-          ]) "Default scale factor.";
-          jpeg_quality = optional (lib.types.ints.between 70 100) "JPEG output quality.";
+          scale = optional lib.types.number "Native benchmark scale factor, 1 through 120; browser sessions use an output resolution target.";
+          encode_qp = optional (lib.types.ints.between 0 51) "AV1 constant quantizer, lower is higher quality; default 14.";
+          jpeg_quality = optional (lib.types.ints.between 70 100) "Deprecated, ignored; retained for upgrading old configurations.";
           idle_seconds = optional (lib.types.ints.between 10 3600) "Backend idle timeout in seconds.";
           gpu_idle_seconds = optional (lib.types.ints.between 1 60) "GPU worker idle timeout in seconds, less than idle_seconds.";
         };

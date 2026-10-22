@@ -1,10 +1,17 @@
 import type { Settings, TabOverride, PlaybackStatus, PlaybackState } from './protocol.ts';
 export const DEFAULTS: Readonly<Settings> = Object.freeze({
   enabled: true,
-  sites: {},
+  sites: Object.freeze({
+    'https://www.youtube.com': true,
+    'https://youtube.com': true,
+    'https://m.youtube.com': true,
+  }),
   quality: 3,
-  scale: 2,
+  target: 2160,
 });
+export function settingsWithDefaults(saved?: Partial<Settings>): Settings {
+  return { ...DEFAULTS, ...saved, sites: { ...DEFAULTS.sites, ...saved?.sites } };
+}
 export function originOf(url: string | undefined) {
   try {
     const u = new URL(url || '');

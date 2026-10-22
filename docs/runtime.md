@@ -1,14 +1,14 @@
 # NVIDIA runtime setup
 
-The application uses the **VFX 1.3 C API** (`VideoSuperRes`, `QualityLevel`, `SrcImage0`, `DstImage0`) and nvJPEG. It does not import Python, use DLPack, launch the original project, call a web service, or substitute a non-AI scaler.
+The application uses the **VFX 1.3 C API** (`VideoSuperRes`, `QualityLevel`, `SrcImage0`, `DstImage0`) and driver-provided NVENC AV1. It does not import Python, use DLPack, launch the original project, call a web service, or substitute a non-AI scaler.
 
 Requirements:
 
-- Linux x86-64 and a supported NVIDIA GPU with Tensor Cores. Start with an RTX desktop GPU; only RTX 5090 was available for testing.
-- The proprietary NVIDIA driver, including a discoverable `libcuda.so.1`. VSR's documented Linux minimums are branch-specific: 570.190+, 580.82+, or 590.44+. See NVIDIA's [VSR requirements](https://docs.nvidia.com/maxine/vfx/latest/Filters/VideoSuperResolution.html).
+- Linux x86-64 and a supported NVIDIA GPU with Tensor Cores and AV1 NVENC (RTX Ada/Blackwell). Start with an RTX desktop GPU; only RTX 5090 was available for testing.
+- The proprietary NVIDIA driver, including discoverable `libcuda.so.1` and `libnvidia-encode.so.1`. VSR's documented Linux minimums are branch-specific: 570.190+, 580.82+, or 590.44+. See NVIDIA's [VSR requirements](https://docs.nvidia.com/maxine/vfx/latest/Filters/VideoSuperResolution.html).
 - VFX 1.3 core, VideoSuperRes feature/model libraries for the GPU, and their CUDA/NPP dependencies. The pinned NVIDIA `nvidia-vfx` 0.2.0.0 archive includes these runtime components; no Python installation of the wheel is needed.
-- CUDA nvJPEG (tested: 13.1.0.59). No NVENC or Video Codec SDK headers are required by this implementation.
-- Chromium 140+ with WebCodecs `VideoFrame.copyTo`, OffscreenCanvas, native messaging, and Web Audio. Readable SDR video in a top-level document is required.
+- NVENC API 13 support in the NVIDIA driver (570+); the VFX branch-specific minimum still applies. The MIT NVENC header is vendored; no CUDA toolkit, nvJPEG, separately downloaded codec SDK or encoder helper build is needed. Older RTX Turing/Ampere GPUs cannot use this AV1 path.
+- Chromium 140+ with WebCodecs `VideoFrame.copyTo`, AV1 `VideoDecoder`, OffscreenCanvas, native messaging, and Web Audio. Readable SDR video in a top-level document is required.
 
 NVIDIA [documents](https://docs.nvidia.com/maxine/vfx/latest/LinuxVFXSDK/GetStartedonLinux.html) a server-side support scope for its Linux SDK. Our desktop browser integration is experimental and is not supported by NVIDIA. Check NVIDIA's current terms, [VSR collection](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/collections/nvvfxvideosuperres), software license, AI product-specific terms, and model agreements before downloading. Download access may depend on your account or entitlement.
 
@@ -21,7 +21,7 @@ bun scripts/install-runtime.ts --accept-nvidia-license
 linux-rtx-vsr doctor --gpu
 ```
 
-It downloads pinned VFX/nvJPEG archives over HTTPS, verifies SHA-256 before extraction, retains license files, and configures absolute runtime paths. It never uses pip, root access, or ELF patching. It refuses to replace an existing runtime directory. A failed download can be retried; a partially extracted runtime is never installed. It can reuse a previously downloaded exact VFX wheel:
+It downloads the pinned VFX archive over HTTPS, verifies SHA-256 before extraction, retains license files, and configures absolute runtime paths. It never uses pip, root access, or ELF patching. It refuses to replace an existing runtime directory. A failed download can be retried; a partially extracted runtime is never installed. It can reuse a previously downloaded exact VFX wheel:
 
 ```sh
 bun scripts/install-runtime.ts --accept-nvidia-license --vfx-archive /path/to/nvidia_vfx-0.2.0.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
@@ -33,7 +33,6 @@ For an existing licensed installation:
 
 ```sh
 linux-rtx-vsr config set sdk_dir /absolute/path/to/nvvfx/libs
-linux-rtx-vsr config set jpeg_library /absolute/path/to/libnvjpeg.so
 # Optional only when the SDK distribution uses a separate model directory:
 linux-rtx-vsr config set model_dir /absolute/path/to/models
 linux-rtx-vsr doctor --gpu
@@ -41,7 +40,7 @@ linux-rtx-vsr doctor --gpu
 
 The loader explicitly preloads required SDK dependencies by absolute path with global symbol visibility. Their own transitive dependencies still need to resolve normally. Keep the archive's `nvvfx/libs` and sibling `nvidia_vfx.libs` layout. On conventional systems, install the distribution's C++ runtime and NVIDIA driver normally. Never patch, strip, or copy-over NVIDIA's signed NGX libraries. See [Nix instructions](nix.md) for NixOS.
 
-Environment overrides `LINUX_RTX_VSR_SDK_DIR` and `LINUX_RTX_VSR_JPEG_LIBRARY` take precedence over the config file. Optional `LINUX_RTX_VSR_EXECUTABLE` tells native integration to invoke a stable wrapper path, useful for Nix packages. Otherwise the current executable's absolute path is recorded. Keep that path installed while browser integration is enabled.
+Environment override `LINUX_RTX_VSR_SDK_DIR` takes precedence over the config file. Old `jpeg_library`/`jpeg_quality` fields are accepted but ignored; nvJPEG is no longer loaded. Optional `LINUX_RTX_VSR_EXECUTABLE` tells native integration to invoke a stable wrapper path, useful for Nix packages. Otherwise the current executable's absolute path is recorded. Keep that path installed while browser integration is enabled.
 
 ## Runtime updates
 
@@ -53,7 +52,9 @@ Stop the backend first. Preserve the old runtime for rollback, install a separat
 nvidia-smi
 linux-rtx-vsr doctor
 linux-rtx-vsr doctor --gpu
-linux-rtx-vsr benchmark --frames 300 --width 1920 --height 1080 --output enhanced.jpg
+linux-rtx-vsr benchmark --frames 300 --width 1920 --height 1080 --target 2160 --output enhanced.obu
 ```
 
-`doctor --gpu` uses actual inference and writes timings. Inspect image output from `benchmark --output` to catch black-image regressions; successful API return codes alone do not prove meaningful pixels. The driver/runtime may reject unsupported hardware or model configurations. Such errors leave the original browser video playing.
+`doctor --gpu` uses actual inference and writes timings. Decode `benchmark --output enhanced.obu` with `ffmpeg -i enhanced.obu -frames:v 1 enhanced.png` and inspect it to catch black-image regressions; successful API return codes alone do not prove meaningful pixels. The driver/runtime may reject unsupported hardware or model configurations. Such errors leave the original browser video playing.
+
+`benchmark --target 4320` requests 8K; hardware limits and VRAM may reject it. This is experimental and is not an 8K realtime claim. The browser defaults to a 4K target. `encode_qp` defaults to 14 (0–51 supported; lower means higher quality/more bandwidth). JPEG quality no longer applies.

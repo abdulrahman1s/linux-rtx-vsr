@@ -1,6 +1,6 @@
 # Validation record — 2026-10-22
 
-This records checks performed during initial implementation, not a certification for other systems. See [benchmark procedure](benchmark.md) for a broader, repeatable matrix.
+This records development checks, not a certification for other systems. The initial implementation sections below describe the **historical JPEG path**; current AV1 results are recorded at the end. See [benchmark procedure](benchmark.md) for a broader, repeatable matrix.
 
 ## Environment
 
@@ -86,3 +86,35 @@ Both CPU-only and GPU browser tests passed with Bun and headless Chromium **148.
 - Remote GitHub Actions execution, publication, download of a published release, and cross-distribution release ABI validation. The workflow and local packaging are provided; no remote repository or release was published by this task.
 
 Until those checks are completed, describe the application as **experimental** and report this exact tested configuration. The implementation fails back to the original picture; it does not quietly switch to another enhancement model or declare an enabled backend to be active presentation.
+
+## AV1 transport and resolution targets, 2026-10-22
+
+The Rust backend now uses actual CUDA VideoSuperRes → GPU BT.709 NV12 → NVENC AV1 independent keyframes. The extension worker decodes to VideoFrame and draws directly. No nvJPEG is loaded. Targets are 720p, 1080p, 1440p, 4K (default), and experimental 8K, fitted to landscape/portrait bounds.
+
+- Cold NV12 inference/AV1 encoding passed for limited BT.709, limited BT.601 and full-range BT.709 on RTX 5090 / driver 595.104.02 / NixOS / VFX 1.3. AV1 was decoded with FFmpeg; the grayscale ramp was visually inspected.
+- Native 1920×1080 → 7680×4320 inference and AV1 encoding passed. A ten-frame development trial observed about 10 ms warm processing, excluding all browser stages; its small sample is not a performance guarantee. The decoded color pattern was inspected.
+- Visible Brave Origin 1.97.59 / Chromium 155.0.8059.85 passed real 1080p → 4K and 360p → 720p lifecycle checks: fresh-only status, pause/resume, seeks, replacement, SPA, container/direct-video fullscreen, native captions, error/retry, settings persistence, and GPU child/VRAM release. A rapid fullscreen-restart lease race was reproduced and corrected with a bounded wait for the closing stream; competing active tabs are still rejected.
+- The Media trace identified **VaapiVideoDecoder, platform=true, AV1, 3840×2160, extension frame-worker.js**. This verifies the enhanced decoder for this setup, rather than relying on a preference flag or observing only the original VP9 decoder.
+- Visible Chromium 148.0.7778.178 also presented actual **7680×4320 AV1** with platform decoder evidence and passed the same lifecycle checks. The screenshot was inspected. The source exposed RGBA, causing larger input transfers. This is experimental 8K correctness evidence, not an 8K realtime claim. The saved [8K trace](benchmarks/2026-10-22-av1-8k.json) notes a temporary network experiment in that binary.
+- The browser fixture verifies YouTube permission and automatic content-script registration on a fresh profile. Pure tests verify default rules, saved false opt-outs, global priority, exact-origin matching and target calculations, including portrait/8K and already-at-target bypass. No live YouTube page or personal browser profile was modified.
+- Headless Chromium without decoding flags rejected the hardware-preferred AV1 configuration clearly. Later repeated Brave launches timed out on this host in both Wayland and X11; Chromium testing continued successfully. Branded browser startup and hardware decoding configuration remain environment-dependent.
+
+### Short visible-window 4K measurement
+
+[Raw AV1 samples and decoder evidence](benchmarks/2026-10-22-av1-4k.json) record generated 1920×1080 60fps VP9/Opus testsrc2, output 3840×2160, AI High, QP14, two bounded processing slots, optimized Rust build, visible Brave window, on the GPU/driver above. Other desktop workloads were active. After excluding the first three sampled seconds, presented count advanced 74 → 176 over 4.781 seconds: **21.33 presented FPS**, with four additional decoded-picture drops. This does **not** establish 4K60 or parity with the original Python pipeline. No controlled Python/JPEG comparison or repeated-trial claim is made.
+
+| Stage                                             | Sample p50 | Sample p95 |
+| ------------------------------------------------- | ---------- | ---------- |
+| Browser capture/copy                              | 8.70 ms    | 9.40 ms    |
+| Worker send → complete native receive             | 50.38 ms   | 53.29 ms   |
+| Native dispatch, including worker pipe round trip | 6.58 ms    | 7.92 ms    |
+| GPU upload/conversion                             | 0.31 ms    | 0.51 ms    |
+| VideoSuperRes inference                           | 1.62 ms    | 1.77 ms    |
+| GPU output conversion + NVENC + packet copy       | 2.45 ms    | 2.76 ms    |
+| Native completion → browser response event        | 1.94 ms    | 2.69 ms    |
+| AV1 decoding                                      | 1.80 ms    | 2.10 ms    |
+| Canvas draw submission                            | 0.20 ms    | 0.20 ms    |
+
+Stages overlap/nest and must not be added together. Request/response splits compare clocks on the same machine and are diagnostic estimates. The large request interval includes browser socket scheduling/copying, loopback transfer, time behind an earlier request, and native receive/unmask; those individual costs have **not** been isolated. Native inference is not the dominant measured interval. Restoring AV1 removes the JPEG stage but has not by itself solved the remaining raw-input throughput bottleneck.
+
+Hidden state was emulated where automation kept the page visible. Physical audible synchronization, physical display latency, long-run memory/CPU behavior, low-VRAM failure, other GPUs, natural-video quality, and sustained 8K performance remain unvalidated.

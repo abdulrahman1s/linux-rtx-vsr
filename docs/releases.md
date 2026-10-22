@@ -43,7 +43,7 @@ A tag must exactly match committed versions. Publication still waits for the ful
 - `linux-rtx-vsr-extension-vVERSION.zip`: extension files at the ZIP root plus license notices. Extract into a stable directory and use Load unpacked. This is not a signed CRX or a Web Store publication.
 - `SHA256SUMS`: SHA-256 for both artifacts.
 
-No NVIDIA driver, CUDA/nvJPEG library, SDK binary, model, browser, downloaded media, or private token is included. Download those separately under their own terms. NixOS uses the source package/runtime wrapper rather than the generic glibc archive.
+No NVIDIA driver, CUDA/NVENC library, SDK binary, model, browser, downloaded media, or private token is included. Download those separately under their own terms. NixOS uses the source package/runtime wrapper rather than the generic glibc archive.
 
 Local packaging:
 

@@ -30,8 +30,10 @@ impl Frame {
             timestamp: f64::from_le_bytes(data[24..32].try_into().unwrap()),
         };
         ensure!(
-            (64..=3840).contains(&f.width) && (64..=2160).contains(&f.height),
-            "Input must be 64×64 through 3840×2160"
+            (64..=7680).contains(&f.width)
+                && (64..=7680).contains(&f.height)
+                && u64::from(f.width) * u64::from(f.height) <= 7680 * 4320,
+            "Input must be at least 64×64 and at most an 8K landscape/portrait frame within 64 MiB"
         );
         ensure!(
             f.timestamp.is_finite() && f.timestamp >= 0.0,
@@ -56,11 +58,15 @@ impl Frame {
         Ok(f)
     }
     pub fn output(&self, scale: f64) -> Result<(u32, u32)> {
-        let w = ((self.width as f64 * scale / 8.).round() as u32) * 8;
-        let h = ((self.height as f64 * scale / 8.).round() as u32) * 8;
         ensure!(
-            w <= 3840 && h <= 2160,
-            "Output exceeds 3840×2160; lower scaling or source resolution"
+            scale.is_finite() && (1.0..=120.0).contains(&scale),
+            "Invalid output scale"
+        );
+        let w = ((self.width as f64 * scale / 8.).floor() as u32) * 8;
+        let h = ((self.height as f64 * scale / 8.).floor() as u32) * 8;
+        ensure!(
+            w <= 7680 && h <= 7680 && u64::from(w) * u64::from(h) <= 7680 * 4320,
+            "Output exceeds an 8K landscape/portrait frame; lower the target resolution"
         );
         Ok((w, h))
     }
@@ -68,6 +74,27 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn target_scales_align_and_bound_8k_landscape_and_portrait() {
+        let mut frame = Frame {
+            width: 1920,
+            height: 1080,
+            format: 0,
+            sequence: 0,
+            epoch: 0,
+            timestamp: 0.,
+        };
+        assert_eq!(frame.output(4.).unwrap(), (7680, 4320));
+        frame.width = 1080;
+        frame.height = 1920;
+        assert_eq!(frame.output(4.).unwrap(), (4320, 7680));
+        assert!(frame.output(4.1).is_err());
+        assert!(frame.output(f64::NAN).is_err());
+        assert!(frame.output(f64::INFINITY).is_err());
+        frame.width = 1920;
+        frame.height = 800;
+        assert_eq!(frame.output(2560. / 1920.).unwrap(), (2560, 1064));
+    }
     #[test]
     fn rejects_malformed_and_unbounded_frames() {
         for n in 0..HEADER {

@@ -3,6 +3,7 @@ import { VsrAudioSync } from './audio-sync.ts';
 import { VsrPresentationClock } from './presentation-clock.ts';
 import { DEFAULTS } from './policy.ts';
 import { request } from './messaging.ts';
+import { planOutput } from './resolution.ts';
 import type { Policy, PlaybackState, PlaybackStatus, FrameMessage } from './protocol.ts';
 declare global {
   var __linuxRtxVsr: boolean | undefined;
@@ -11,7 +12,7 @@ interface Session {
   video: HTMLVideoElement;
   epoch: number;
   key: string;
-  busy: boolean;
+  pending: number;
   sequence: number;
   callback: number;
   created: number;
@@ -31,6 +32,8 @@ interface Session {
     session: Session | null = null,
     generation = 0;
   let failedKey: string | null = null,
+    failureStatus: { name: PlaybackState; message: string } | null = null,
+    needsGesture = false,
     hoverUntil = 0,
     lastUrl = location.href,
     lastState = '',
@@ -38,7 +41,7 @@ interface Session {
   const audio = new VsrAudioSync(),
     clock = new VsrPresentationClock();
   function key(v: HTMLVideoElement | null) {
-    return `${v?.currentSrc}|${policy.quality}|${policy.scale}`;
+    return `${v?.currentSrc}|${v?.videoWidth}x${v?.videoHeight}|${policy.quality}|${policy.target}`;
   }
   function state(name: PlaybackState, message: string, extra: Partial<PlaybackStatus> = {}) {
     const value = { state: name, message, ...extra },
@@ -65,6 +68,8 @@ interface Session {
   }
   function fail(error: string, unsupported = false) {
     failedKey = key(video);
+    needsGesture = /playback gesture|Play the video|Audio needs/.test(error);
+    failureStatus = { name: unsupported ? 'unsupported' : 'error', message: error };
     stop();
     state(unsupported ? 'unsupported' : 'error', error);
   }
@@ -116,11 +121,8 @@ interface Session {
     if (v.playbackRate <= 0 || v.playbackRate > 2)
       return ['unsupported', 'Playback rates above 2× are unsupported'];
     if (!v.videoWidth || !v.videoHeight) return ['ready', 'Waiting for video dimensions'];
-    if (v.videoWidth * policy.scale > 3840 || v.videoHeight * policy.scale > 2160)
-      return [
-        'bypassed',
-        'Source is above the selected 4K output limit; lower scaling or source resolution',
-      ];
+    if (planOutput(v.videoWidth, v.videoHeight, policy.target).bypass)
+      return ['bypassed', `Source already meets the ${policy.target}p target; showing original`];
     return null;
   }
   function position(s: Session) {
@@ -142,7 +144,7 @@ interface Session {
       video: v,
       epoch: seq,
       key: key(v),
-      busy: false,
+      pending: 0,
       sequence: 0,
       callback: 0,
       created: Date.now(),
@@ -199,7 +201,7 @@ interface Session {
           sendClock(s);
           capture(s);
         }
-        if (data.type === 'available') s.busy = false;
+        if (data.type === 'available') s.pending = Math.max(0, s.pending - 1);
         if (data.type === 'recycle') s.buffer = data.buffer;
         if (data.type === 'decoded') audio.update(data.ageMs);
         if (data.type === 'stale') {
@@ -223,6 +225,7 @@ interface Session {
             latenessMs: data.latenessMs,
             startupMs: data.startupMs,
             audio: audio.stats(),
+            timings: data.stats,
           });
         }
       };
@@ -238,7 +241,7 @@ interface Session {
               type: 'rtx-vsr-init',
               grant: auth.grant,
               quality: policy.quality,
-              scale: policy.scale,
+              scale: planOutput(v.videoWidth, v.videoHeight, policy.target).scale,
               objectFit: getComputedStyle(v).objectFit,
             },
             chrome.runtime.getURL(''),
@@ -276,12 +279,12 @@ interface Session {
       }
       clock.observe(metadata, s.video.playbackRate, s.video.currentTime, now);
       sendClock(s);
-      if (!s.busy && s.ready) {
+      if (s.pending < 2 && s.ready) {
         try {
           const frame = new VideoFrame(s.video, {
             timestamp: Math.round(metadata.mediaTime * 1e6),
           });
-          s.busy = true;
+          s.pending++;
           copyFrame(s, frame, metadata.mediaTime);
         } catch (error) {
           fail(
@@ -295,6 +298,8 @@ interface Session {
     });
   }
   async function copyFrame(s: Session, frame: VideoFrame, timestamp: number) {
+    const copyAt = performance.now();
+    const sequence = ++s.sequence;
     try {
       // Chromium cannot transfer VideoFrame across the page/extension agent
       // clusters. copyTo performs asynchronous native staging; transfer only the
@@ -315,7 +320,8 @@ interface Session {
       s.buffer = null;
       const options: VideoFrameCopyToOptions = nv12
         ? {
-            format: 'NV12',
+            // Already NV12. Brave rejects an explicit non-RGB conversion
+            // request even when it matches the source format.
             layout: [
               { offset: 0, stride: w },
               { offset: w * h, stride: w },
@@ -330,12 +336,21 @@ interface Session {
         [4, w],
         [8, h],
         [12, format],
-        [16, ++s.sequence],
+        [16, sequence],
         [20, s.epoch],
       ])
         header.setUint32(offset, number, true);
       header.setFloat64(24, timestamp, true);
-      s.port!.postMessage({ type: 'capture', buffer, epoch: s.epoch }, [buffer]);
+      s.port!.postMessage(
+        {
+          type: 'capture',
+          buffer,
+          sequence,
+          captureMs: performance.now() - copyAt,
+          epoch: s.epoch,
+        },
+        [buffer],
+      );
     } catch (error) {
       if (session === s) fail(`Cannot capture this video: ${errorMessage(error)}`, true);
     } finally {
@@ -369,7 +384,10 @@ interface Session {
       state(...bypass);
       return;
     }
-    if (failedKey === key(video)) return;
+    if (failedKey === key(video)) {
+      if (failureStatus) state(failureStatus.name, failureStatus.message);
+      return;
+    }
     if (session && session.key !== key(video)) stop();
     if (!session) {
       begin(video);
@@ -388,7 +406,7 @@ interface Session {
   async function refresh() {
     try {
       const next = await request({ type: 'policy' });
-      if (policy.quality !== next.quality || policy.scale !== next.scale) stop();
+      if (policy.quality !== next.quality || policy.target !== next.target) stop();
       policy = next;
       failedKey = null;
       reconcile();
@@ -437,6 +455,17 @@ interface Session {
     );
   }
   document.addEventListener('play', reconcile, true);
+  document.addEventListener(
+    'click',
+    () => {
+      if (needsGesture && video && !video.paused) {
+        needsGesture = false;
+        failedKey = null;
+        reconcile();
+      }
+    },
+    true,
+  );
   window.addEventListener('pagehide', stop);
   setInterval(() => {
     if (location.href !== lastUrl) {

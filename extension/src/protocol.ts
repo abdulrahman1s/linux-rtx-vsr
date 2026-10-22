@@ -1,12 +1,12 @@
 // Shared wire contracts. Types do not grant trust: privileged requests still
 // require sender checks, and native frames are validated by the Rust backend.
 export type Quality = 1 | 2 | 3 | 4;
-export type Scale = 1.5 | 2;
+export type TargetResolution = 720 | 1080 | 1440 | 2160 | 4320;
 export interface Settings {
   enabled: boolean;
   sites: Record<string, boolean>;
   quality: Quality;
-  scale: Scale;
+  target: TargetResolution;
 }
 export interface TabOverride {
   origin: string;
@@ -32,6 +32,21 @@ export interface PlaybackStatus {
   latenessMs?: number;
   startupMs?: number;
   audio?: object;
+  timings?: FrameTimings;
+}
+export interface FrameTimings {
+  capture_ms?: number;
+  round_trip_ms?: number;
+  worker_round_trip_ms?: number;
+  upload_ms?: number;
+  encode_ms?: number;
+  decode_ms?: number;
+  draw_ms?: number;
+  presentation_wait_ms?: number;
+  request_ms?: number;
+  response_ms?: number;
+  received_wall_ms?: number;
+  completed_wall_ms?: number;
 }
 export interface Snapshot {
   settings: Settings;
@@ -55,7 +70,7 @@ export type RuntimeRequest =
   | { type: 'claim'; grant: string }
   | { type: 'snapshot'; tabId: number }
   | { type: 'manual' | 'automatic'; tabId: number; enabled: boolean }
-  | { type: 'settings'; enabled?: boolean; quality?: number; scale?: number }
+  | { type: 'settings'; enabled?: boolean; quality?: number; target?: number }
   | { type: 'reset-override'; tabId: number }
   | { type: 'backend' };
 export type RuntimeReply<T extends RuntimeRequest> = T extends { type: 'policy' }
@@ -77,8 +92,9 @@ export interface ClockMessage {
   at: number;
   rate: number;
 }
-export interface FrameMetadata {
+export interface FrameMetadata extends FrameTimings {
   type: 'frame';
+  sequence: number;
   epoch: number;
   timestamp: number;
   source_width: number;
@@ -87,9 +103,14 @@ export interface FrameMetadata {
   height: number;
   service_ms: number;
   inference_ms: number;
+  format: 'av1';
+  codec: string;
+  keyframe: true;
 }
 export type CaptureMessage =
-  ClockMessage | { type: 'stop' } | { type: 'capture'; epoch: number; buffer: ArrayBuffer };
+  | ClockMessage
+  | { type: 'stop' }
+  | { type: 'capture'; epoch: number; sequence: number; captureMs: number; buffer: ArrayBuffer };
 export type FrameMessage =
   | { type: 'ready' | 'available' }
   | { type: 'error' | 'stale'; message: string }
@@ -111,5 +132,5 @@ export interface WorkerInit {
   canvas: OffscreenCanvas;
   auth: Authorization;
   quality: Quality;
-  scale: Scale;
+  scale: number;
 }

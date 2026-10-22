@@ -25,7 +25,6 @@ let
       pkgs.callPackage ./runtime-wrapper.nix {
         package = cfg.package;
         runtime = cfg.runtime.package;
-        jpegPackage = cfg.runtime.jpegPackage;
         inherit (cfg.runtime) driverLibraryPaths;
       }
     else
@@ -67,7 +66,7 @@ in
       };
     }) browserPackageNames;
     runtime = {
-      enable = lib.mkEnableOption "the separately licensed NVIDIA VFX and CUDA nvJPEG runtime";
+      enable = lib.mkEnableOption "the separately licensed NVIDIA VFX runtime (NVENC comes from the driver)";
       package = lib.mkOption {
         type = lib.types.package;
         default = pkgs.callPackage ./nvidia-runtime.nix { };
@@ -75,10 +74,9 @@ in
         description = "VFX runtime with nvvfx/libs; requires accepting NVIDIA terms and unfree packages.";
       };
       jpegPackage = lib.mkOption {
-        type = lib.types.package;
-        default = pkgs.cudaPackages.libnvjpeg;
-        defaultText = lib.literalExpression "pkgs.cudaPackages.libnvjpeg";
-        description = "CUDA nvJPEG library package.";
+        type = lib.types.nullOr lib.types.package;
+        default = null;
+        description = "Deprecated, ignored compatibility option. AV1 streaming uses the NVIDIA driver's NVENC library, not nvJPEG.";
       };
       driverLibraryPaths = lib.mkOption {
         type = lib.types.listOf lib.types.str;
