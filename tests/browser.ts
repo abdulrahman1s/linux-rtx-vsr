@@ -148,6 +148,79 @@ try {
     assert.ok(retry < 30, 'YouTube automatic content script must register on install');
     await Bun.sleep(50);
   }
+  // Exercise the actual default origin without contacting YouTube. Deliberately
+  // omit its dynamic registration: the navigation recovery must attach anyway.
+  await worker.evaluate(() => chrome.scripting.unregisterContentScripts({ ids: ['vsr-sites'] }));
+  const youtube = await context.newPage();
+  await youtube.route('https://www.youtube.com/**', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<!doctype html><title>Automatic attachment fixture</title><video style="width:640px;height:360px"></video>',
+    }),
+  );
+  await youtube.goto('https://www.youtube.com/watch?v=local-fixture');
+  const youtubeTab = await worker.evaluate(
+    async () => (await chrome.tabs.query({ url: 'https://www.youtube.com/*' }))[0].id!,
+  );
+  await expectAutomaticAttachment();
+  // Open another document while globally disabled, then change the saved policy
+  // without notifying it. A popup snapshot must recover this unattached tab.
+  await worker.evaluate(() => chrome.storage.local.set({ settings: { enabled: false } }));
+  await youtube.goto('https://www.youtube.com/watch?v=existing-document');
+  assert.equal(
+    await worker.evaluate(
+      (tabId) =>
+        chrome.tabs.sendMessage(tabId, { type: 'probe' }).then(
+          () => true,
+          () => false,
+        ),
+      youtubeTab,
+    ),
+    false,
+    'Disabled page must begin without an injected content script',
+  );
+  await worker.evaluate(() => chrome.storage.local.set({ settings: { enabled: true } }));
+  const attachmentPopup = await context.newPage();
+  await attachmentPopup.goto(`chrome-extension://${id}/popup.html`);
+  // Popup snapshots probe an existing script without refreshing its policy or
+  // repeatedly retrying a failed backend. This must preserve the reported state.
+  const snapshot = await attachmentPopup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ type: 'snapshot', tabId }),
+    youtubeTab,
+  );
+  assert.ok(!snapshot.error, JSON.stringify(snapshot));
+  await expectAutomaticAttachment();
+  const unchanged = await attachmentPopup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ type: 'snapshot', tabId }),
+    youtubeTab,
+  );
+  assert.equal(unchanged.state.state, 'paused');
+  // Global re-enable also attaches existing documents without a page refresh.
+  await worker.evaluate(() => chrome.storage.local.set({ settings: { enabled: false } }));
+  await youtube.goto('https://www.youtube.com/watch?v=global-enable');
+  await attachmentPopup.evaluate(() =>
+    chrome.runtime.sendMessage({ type: 'settings', enabled: true }),
+  );
+  await expectAutomaticAttachment();
+  await attachmentPopup.close();
+  await youtube.close();
+  console.log('Automatic attachment passed: YouTube navigation, existing tab, global re-enable');
+  async function expectAutomaticAttachment() {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const state = await worker.evaluate(
+        async (tabId) =>
+          (
+            await chrome.storage.session.get<Record<string, PlaybackStatus | undefined>>(
+              `state:${tabId}`,
+            )
+          )[`state:${tabId}`],
+        youtubeTab,
+      );
+      if (state?.state === 'paused') return;
+      await Bun.sleep(50);
+    }
+    assert.fail('Enabled YouTube tab must detect its video without manual injection');
+  }
   // Small lifecycle fixture uses 720p; performance runs explicitly select 4K.
   const target = Number(process.env.VSR_TEST_TARGET || 720);
   await worker.evaluate(async (target) => {

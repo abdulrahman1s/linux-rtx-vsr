@@ -22,6 +22,16 @@ async function policy(tabId: number, url: string | undefined) {
 async function inject(tabId: number) {
   await chrome.scripting.executeScript({ target: { tabId }, files: SCRIPTS });
 }
+async function attach(tab: chrome.tabs.Tab) {
+  if (tab.id === undefined || !(await policy(tab.id, tab.url)).wanted) return;
+  try {
+    // A saved rule does not prove that this document has a content script.
+    // In particular, registration is not retroactive for restored/open tabs.
+    await chrome.tabs.sendMessage(tab.id, { type: 'probe' });
+  } catch {
+    await inject(tab.id);
+  }
+}
 async function show(tabId: number, value?: PlaybackStatus) {
   const state = freshState(value),
     style = STATES[state.state] || STATES.error;
@@ -35,16 +45,22 @@ async function show(tabId: number, value?: PlaybackStatus) {
 async function notifyTabs() {
   for (const tab of await chrome.tabs.query({})) {
     if (!tab.id) continue;
+    await attach(tab).catch(() => {});
     chrome.tabs.sendMessage(tab.id!, { type: 'policy-changed' }).catch(() => {});
     if (!(await settings()).enabled)
       await show(tab.id!, { state: 'disabled', message: 'Globally disabled' });
   }
 }
-async function syncSites() {
+let siteSync: Promise<void> = Promise.resolve();
+function syncSites() {
+  // Install/startup/permission events may overlap. Keep one registration update
+  // in flight and never remove a working registration before replacing it.
+  siteSync = siteSync.catch(() => {}).then(reconcileSites);
+  return siteSync;
+}
+async function reconcileSites() {
   const config = await settings();
   const registered = await chrome.scripting.getRegisteredContentScripts();
-  if (registered.length)
-    await chrome.scripting.unregisterContentScripts({ ids: registered.map((x) => x.id) });
   const matches = [];
   for (const [origin, enabled] of Object.entries(config.sites)) {
     if (
@@ -54,17 +70,26 @@ async function syncSites() {
     )
       matches.push(`${origin}/*`);
   }
-  if (matches.length)
-    await chrome.scripting.registerContentScripts([
+  const existing = registered.find((script) => script.id === 'vsr-sites');
+  if (matches.length) {
+    const scripts = [
       {
         id: 'vsr-sites',
         matches,
         js: SCRIPTS,
-        runAt: 'document_idle',
+        runAt: 'document_idle' as const,
         allFrames: false,
         persistAcrossSessions: true,
       },
-    ]);
+    ];
+    if (existing) await chrome.scripting.updateContentScripts(scripts);
+    else await chrome.scripting.registerContentScripts(scripts);
+  } else if (existing) {
+    await chrome.scripting.unregisterContentScripts({ ids: ['vsr-sites'] });
+  }
+  // Dynamic registration covers future documents; explicitly recover existing
+  // permitted tabs as well. A navigation/closed tab must not abort the others.
+  await Promise.allSettled((await chrome.tabs.query({})).map(attach));
 }
 async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSender) {
   const ownPage =
@@ -117,6 +142,17 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
   if (message.type === 'snapshot') {
     const tab = await chrome.tabs.get(message.tabId);
     const tabPolicy = await policy(tab.id!, tab.url);
+    if (tabPolicy.wanted) {
+      try {
+        await attach(tab);
+      } catch (error) {
+        const state: PlaybackStatus = {
+          state: 'error',
+          message: `Cannot attach to this page: ${errorMessage(error)}. Allow site access in the extension menu, then refresh this tab.`,
+        };
+        await chrome.storage.session.set({ [`state:${tab.id}`]: state });
+      }
+    }
     const state = freshState(
       (
         await chrome.storage.session.get<Record<string, PlaybackStatus | undefined>>(
@@ -193,6 +229,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 chrome.runtime.onInstalled.addListener(() => syncSites().catch(console.error));
 chrome.runtime.onStartup.addListener(() => syncSites().catch(console.error));
 chrome.permissions.onRemoved.addListener(() => syncSites().catch(console.error));
+chrome.permissions.onAdded.addListener(() => syncSites().catch(console.error));
 chrome.tabs.onRemoved.addListener((tabId) =>
   chrome.storage.session.remove([`override:${tabId}`, `state:${tabId}`]),
 );
@@ -205,6 +242,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
       message: wanted ? 'Waiting for a video on this page' : 'Enhancement disabled for this page',
     }).catch(() => {});
   }
+  if (change.status === 'complete') await attach(tab).catch(console.error);
 });
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   const v = (

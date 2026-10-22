@@ -45,7 +45,7 @@ For NixOS, use the [Nix instructions](docs/nix.md). For a conventional glibc Lin
 
 Open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the directory printed by `integration install` (normally `~/.local/share/linux-rtx-vsr/extension`). Pin **Linux RTX VSR** to the toolbar. On YouTube, start an SDR video: enhancement is enabled automatically by default. On other sites, start playback, click the toolbar icon and choose **Enable for this tab**. The engine starts on demand. Choose an **Output target** in the popup: 720p, 1080p, 1440p, 4K (default), or experimental 8K. Scaling is calculated for each source, preserving aspect ratio; videos already at or above the target use the original.
 
-Use `--browser chrome` or `--browser brave` for their standard profile roots. For a custom `--user-data-dir`, pass `--manifest-dir /absolute/user-data-dir/NativeMessagingHosts`. Flatpak/Snap browser sandboxes are not supported. Refresh already-open video pages after loading or updating the extension.
+Use `--browser chrome`, `--browser brave`, or `--browser brave-origin` for their standard native messaging locations (`brave-origin-nightly` is also available). Branded browsers can use their compiled default location even with a custom `--user-data-dir`; the popup's backend check verifies discovery. Flatpak/Snap browser sandboxes are not supported. Refresh already-open video pages after updating the extension to clear older content scripts.
 
 ## Automatically enhance a site
 

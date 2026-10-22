@@ -50,6 +50,8 @@ Run `sudo nixos-rebuild switch --flake .#YOUR_HOST`. In Chromium, open `chrome:/
 
 The module creates system-wide manifests under `/etc/chromium/native-messaging-hosts` or `/etc/opt/chrome/native-messaging-hosts` (Chrome and Brave share the latter directory). Every local user can use the extension; each user's configuration, state, credentials and backend remain separate. Native settings remain mutable through `config set`. Use Home Manager instead if you want per-user declarative settings or manifests.
 
+`doctor` checks the installed `/etc/linux-rtx-vsr/extension/manifest.json` when present, so a NixOS installation does not require an additional exported copy in your home directory. It also recognizes Brave Origin's user registry and `/etc/linux-rtx-vsr/native-messaging-hosts` for custom sandbox integrations. Finding the latter verifies the manifest on the host; only a successful backend check in the browser confirms that the sandbox exposes it and can execute its launcher. Keep these binds in the browser's declarative sandbox configuration.
+
 ### Home Manager: install for one user
 
 Add the module to `home-manager.lib.homeManagerConfiguration.modules`, or to `home-manager.users.YOUR_USER.imports` when Home Manager is a NixOS module:

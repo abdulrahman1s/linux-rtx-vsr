@@ -368,7 +368,13 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     );
     let mut found = false;
     let mut manifests = Vec::new();
-    for browser in ["chromium", "chrome", "brave"] {
+    for browser in [
+        "chromium",
+        "chrome",
+        "brave",
+        "brave-origin",
+        "brave-origin-nightly",
+    ] {
         manifests.push((
             format!("{browser} user"),
             config::browser_dir(browser)?.join(format!("{}.json", daemon::HOST)),
@@ -377,6 +383,10 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     for (browser, dir) in [
         ("chromium", "/etc/chromium/native-messaging-hosts"),
         ("chrome/brave", "/etc/opt/chrome/native-messaging-hosts"),
+        (
+            "Nix sandbox registry (browser visibility requires a browser check)",
+            "/etc/linux-rtx-vsr/native-messaging-hosts",
+        ),
     ] {
         manifests.push((
             format!("{browser} system"),
@@ -385,7 +395,6 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     }
     for (browser, p) in manifests {
         if p.exists() {
-            found = true;
             let valid = fs::read(&p)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -397,6 +406,7 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
                                 c.extension_id.as_deref().unwrap_or(daemon::EXTENSION_ID)
                             )])
                 });
+            found |= valid;
             report(
                 &format!("{browser} native manifest"),
                 valid,
@@ -419,20 +429,21 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
             );
         }
     }
-    let extension_manifest = paths.data.join("extension/manifest.json");
+    let extension_manifest = config::installed_extension(&paths.data, Path::new("/etc"));
+    println!("Extension manifest: {}", extension_manifest.display());
     let version_ok = fs::read(&extension_manifest)
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         .is_some_and(|v| v["version"] == env!("CARGO_PKG_VERSION"));
     report(
-        "Exported extension version",
+        "Installed extension version",
         version_ok,
         "Re-run integration install or extension, then reload it in chrome://extensions and refresh video tabs",
     );
     report(
         "Browser native integration",
         found,
-        "Run integration install --browser chromium (custom manifest directories must be inspected separately)",
+        "For Brave Origin use integration install --browser brave-origin; for Nix-managed integration check the declarative manifest and sandbox mounts",
     );
     println!(
         "Browser WebCodecs, CORS, audible sync, and visible overlay require the browser fixture; native checks cannot certify them."

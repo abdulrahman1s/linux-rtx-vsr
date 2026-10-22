@@ -57,6 +57,8 @@ On NixOS, `nix develop` supplies `CHROMIUM_PATH`. Otherwise set it to an install
 
 The CPU-only browser test deliberately omits native integration and checks understandable errors, iframe removal, continued original playback, and disable. Ordinary CI also tests site-rule precedence, serialization, stale-active expiration, worker metadata/binary sequencing, fresh-frame-only presentation, clock reset, audio-delay bypass, malformed frames, single-use expiring credentials, origin rejection, daemon idempotency and idle exit. Rust lifecycle tests bind only loopback/temporary Unix sockets and require no GPU.
 
+The browser test intercepts a YouTube URL with a local HTML video fixture; it never contacts YouTube. It removes dynamic script registration and verifies automatic navigation attachment, recovery of an already-open tab through the popup, and global re-enable without refreshing the page. These exercise actual extension messages and content-script injection rather than treating a saved site rule as proof of detection.
+
 ## GPU and full browser path
 
 Install a compatible NVIDIA runtime and driver, then:

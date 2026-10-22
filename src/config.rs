@@ -186,14 +186,39 @@ pub fn browser_dir(browser: &str) -> Result<PathBuf> {
         "chromium" => root.join("chromium"),
         "chrome" => root.join("google-chrome"),
         "brave" => root.join("BraveSoftware/Brave-Browser"),
-        _ => bail!("Browser must be chromium, chrome, or brave (custom profiles: --manifest-dir)"),
+        "brave-origin" => root.join("BraveSoftware/Brave-Origin"),
+        "brave-origin-nightly" => root.join("BraveSoftware/Brave-Origin-Nightly"),
+        _ => bail!("Browser must be chromium, chrome, brave, brave-origin, or brave-origin-nightly (custom profiles: --manifest-dir)"),
     }
     .join("NativeMessagingHosts"))
+}
+
+pub fn installed_extension(data: &Path, etc: &Path) -> PathBuf {
+    let managed = etc.join("linux-rtx-vsr/extension/manifest.json");
+    if managed.is_file() {
+        managed
+    } else {
+        data.join("extension/manifest.json")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extension_discovery_recognizes_declarative_installation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let etc = tmp.path().join("etc");
+        assert_eq!(
+            installed_extension(&data, &etc),
+            data.join("extension/manifest.json")
+        );
+        let managed = etc.join("linux-rtx-vsr/extension/manifest.json");
+        fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        fs::write(&managed, br#"{"version":"test"}"#).unwrap();
+        assert_eq!(installed_extension(&data, &etc), managed);
+    }
     #[test]
     fn declarative_configuration_is_not_replaced() {
         let tmp = tempfile::tempdir().unwrap();

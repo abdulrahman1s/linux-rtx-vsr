@@ -416,7 +416,8 @@ interface Session {
       );
     }
   }
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+    if (message.type === 'probe') respond({ attached: true });
     if (message.type === 'policy-changed') refresh();
   });
   document.addEventListener('visibilitychange', reconcile);
