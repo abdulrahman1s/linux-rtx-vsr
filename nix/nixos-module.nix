@@ -20,6 +20,10 @@ let
     chrome = "opt/chrome/native-messaging-hosts";
     # Brave uses Chrome's system-wide native messaging directory.
     brave = "opt/chrome/native-messaging-hosts";
+    edge = "opt/edge/native-messaging-hosts";
+    vivaldi = "opt/vivaldi/native-messaging-hosts";
+    # Helium explicitly falls back to Chrome's system registry.
+    helium = "opt/chrome/native-messaging-hosts";
   };
 in
 {

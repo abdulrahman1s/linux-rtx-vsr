@@ -48,7 +48,7 @@ modules = [
 
 Run `sudo nixos-rebuild switch --flake .#YOUR_HOST`. In Chromium, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select **`/etc/linux-rtx-vsr/extension`**. Run `linux-rtx-vsr doctor --gpu`, then use the extension's popup to enable a video or save an automatic site rule. There is no `integration install` step.
 
-The module creates system-wide manifests under `/etc/chromium/native-messaging-hosts` or `/etc/opt/chrome/native-messaging-hosts` (Chrome and Brave share the latter directory). Every local user can use the extension; each user's configuration, state, credentials and backend remain separate. Native settings remain mutable through `config set`. Use Home Manager instead if you want per-user declarative settings or manifests.
+The module creates system-wide manifests under `/etc/chromium/native-messaging-hosts`, `/etc/opt/chrome/native-messaging-hosts` (Chrome, Brave, and Helium), `/etc/opt/edge/native-messaging-hosts`, or `/etc/opt/vivaldi/native-messaging-hosts`. Every local user can use the extension; each user's configuration, state, credentials and backend remain separate. Native settings remain mutable through `config set`. Use Home Manager instead if you want per-user declarative settings or manifests.
 
 `doctor` checks the installed `/etc/linux-rtx-vsr/extension/manifest.json` when present, so a NixOS installation does not require an additional exported copy in your home directory. It also recognizes Brave Origin's user registry and `/etc/linux-rtx-vsr/native-messaging-hosts` for custom sandbox integrations. Finding the latter verifies the manifest on the host; only a successful backend check in the browser confirms that the sandbox exposes it and can execute its launcher. Keep these binds in the browser's declarative sandbox configuration.
 
@@ -83,7 +83,7 @@ pkgs = import inputs.nixpkgs {
 
 With NixOS-integrated Home Manager and `home-manager.useGlobalPkgs = true`, use the system's `nixpkgs.config.allowUnfree` instead.
 
-Run `home-manager switch --flake .#YOUR_USER` (or your normal NixOS rebuild for integrated Home Manager). Load **`~/.local/share/linux-rtx-vsr/extension`** with **Load unpacked** in Chromium; if you customize `xdg.dataHome`, use `$XDG_DATA_HOME/linux-rtx-vsr/extension`. Native manifests follow `xdg.configHome` for Chromium, Chrome and Brave. Run `linux-rtx-vsr doctor --gpu`.
+Run `home-manager switch --flake .#YOUR_USER` (or your normal NixOS rebuild for integrated Home Manager). Load **`~/.local/share/linux-rtx-vsr/extension`** with **Load unpacked** in your browser; if you customize `xdg.dataHome`, use `$XDG_DATA_HOME/linux-rtx-vsr/extension`. Native manifests follow `xdg.configHome` for the selected browser. Run `linux-rtx-vsr doctor --gpu`.
 
 Leaving `settings = { };` (the default) keeps native configuration user-managed. Setting any field creates a declarative `linux-rtx-vsr/config.json`: CLI `config set/reset` refuses to replace this managed symlink. Edit Nix and rebuild instead. The file is in the public Nix store: never place secrets there. Extension site rules and toolbar settings remain editable and persist in the browser, independently of this file. Quality/scale here are native defaults; the extension's per-session selections take precedence.
 
@@ -99,6 +99,12 @@ Leaving `settings = { };` (the default) keeps native configuration user-managed.
 | `browsers.chrome.package`             | `pkgs.google-chrome`           | Chrome package override; requires unfree acceptance unless overridden                   |
 | `browsers.brave.enable`               | `false`                        | Install Brave and register its native host                                              |
 | `browsers.brave.package`              | `pkgs.brave`                   | Brave package override; `null` registers without installing                             |
+| `browsers.edge.enable`                | `false`                        | Install Microsoft Edge and register its native host                                     |
+| `browsers.edge.package`               | `pkgs.microsoft-edge`          | Edge package override; requires unfree acceptance unless overridden                     |
+| `browsers.vivaldi.enable`             | `false`                        | Install Vivaldi and register its native host                                            |
+| `browsers.vivaldi.package`            | `pkgs.vivaldi`                 | Vivaldi package override; requires unfree acceptance unless overridden                  |
+| `browsers.helium.enable`              | `false`                        | Register Helium's native host                                                           |
+| `browsers.helium.package`             | `null`                         | Optional Helium derivation; `null` registers an existing install                        |
 | `runtime.enable`                      | `false`                        | Wrap the app with packaged VFX/NVENC paths; explicitly opt into unfree runtime          |
 | `runtime.package`                     | Pinned NVIDIA VFX package      | Override runtime root containing `nvvfx/libs`                                           |
 | `runtime.driverLibraryPaths`          | `[ "/run/opengl-driver/lib" ]` | Persistent driver search paths; useful outside NixOS                                    |
@@ -115,7 +121,7 @@ programs.linux-rtx-vsr.browsers.chromium = {
 
 Set a browser's `package = null;` if your system or another module already manages its installation. Native registration still applies. Package overrides must keep that browser's standard native messaging locations; changing the package does not change the integration family. Disabled browser entries do not evaluate/install their packages, so Chrome's default unfree package does not affect Chromium-only setups. Browser installation does not side-load the extension: follow **Load unpacked** above.
 
-The previous list syntax is replaced by these browser attributes. For example, replace `browsers = [ "chromium" ];` with `browsers.chromium.enable = true;`.
+The previous list syntax is replaced by these browser attributes. For example, replace `browsers = [ "chromium" ];` with `browsers.chromium.enable = true;`. For Helium, use `browsers.helium.enable = true;` and optionally set `browsers.helium.package` to your own Helium derivation; the pinned nixpkgs does not provide a default Helium package. More CLI channel options and custom profiles are described in the [browser guide](browsers.md).
 
 Home Manager settings accept `quality` (1–4), native-benchmark `scale` (1–120), `encode_qp` (0–51, default 14), `gpu_idle_seconds` (1–60), `idle_seconds` (10–3600), `sdk_dir`, and `model_dir`. Browser sessions select a resolution target in the popup instead of the native benchmark scale. Legacy `jpeg_library`, `jpeg_quality` and `runtime.jpegPackage` settings are accepted but ignored; nvJPEG is no longer installed or loaded. Omitted/null fields use application defaults. GPU idle must be less than backend idle. Packaged-runtime SDK environment paths take precedence over their configuration fields. Leave `runtime.enable = false` when providing your own SDK configuration.
 
@@ -129,7 +135,7 @@ For updates, stop the backend, update the flake input and rebuild/switch; manife
 
 To remove, disable `programs.linux-rtx-vsr.enable`, rebuild/switch, and remove the extension in the browser. Mutable user config/state and browser site rules are deliberately retained; see the README for optional complete data removal. Neither module removes your host NVIDIA driver.
 
-Flatpak/Snap browsers and custom `--user-data-dir` profiles may not see these standard manifest paths or execute store binaries. They need separate sandbox/profile integration and have not been validated. Chromium is the tested browser target; Chrome and Brave registration paths are provided, but real enhancement there remains untested. The [Chromium native messaging documentation](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) and [Brave source](https://github.com/brave/brave-core/blob/master/app/brave_main_delegate.cc) describe the relevant locations.
+Flatpak/Snap browsers and custom `--user-data-dir` profiles may not see these standard manifest paths or execute store binaries. They need separate sandbox/profile integration and have not been validated. Registration is available for all browsers listed above; real enhancement has only been exercised on the builds in the [validation record](validation.md). The [browser guide](browsers.md) links the native messaging directory references.
 
 ## Opt-in NVIDIA runtime without modules
 
@@ -181,6 +187,6 @@ Home Manager can also manage integration on another distribution. Set `runtime.d
 
 ## Module validation
 
-`nix flake check` evaluates both real module systems, including disabled modules and browser entries, all three browser registrations and package overrides, Chromium/Brave package defaults, registration-only mode, extension origin restrictions, Home Manager settings/defaults and invalid idle-time assertions. A free fixture exercises runtime wrapping without downloading proprietary code. The package build and Rust tests also check that declarative configuration cannot be replaced through the CLI. These checks do not activate a host configuration or prove a browser on another distribution supports enhancement.
+`nix flake check` evaluates both real module systems, including disabled modules and browser entries, all six browser registrations and package overrides, Chromium/Brave package defaults, registration-only mode, extension origin restrictions, Home Manager settings/defaults and invalid idle-time assertions. It also runs ShellCheck on the installers. A free fixture exercises runtime wrapping without downloading proprietary code. The package build and Rust tests also check that declarative configuration cannot be replaced through the CLI. These checks do not activate a host configuration or prove a browser on another distribution supports enhancement.
 
 The AV1 transport requires an AV1-encoding RTX Ada/Blackwell GPU. Nix supplies no proprietary encoder implementation: NVENC is part of your host NVIDIA driver. 8K is an experimental popup target; model, encoder, decoder, memory and display support must be checked on the actual host.

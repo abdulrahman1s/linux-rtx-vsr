@@ -11,6 +11,9 @@ let
     chromium = "chromium";
     chrome = "google-chrome";
     brave = "brave";
+    edge = "microsoft-edge";
+    vivaldi = "vivaldi";
+    helium = "helium";
   };
   enabledBrowsers = lib.filter (browser: cfg.browsers.${browser}.enable) (
     builtins.attrNames browserPackageNames
@@ -60,8 +63,8 @@ in
       enable = lib.mkEnableOption "${browser} installation and native messaging integration";
       package = lib.mkOption {
         type = lib.types.nullOr lib.types.package;
-        default = pkgs.${packageName};
-        defaultText = lib.literalExpression "pkgs.${packageName}";
+        default = if browser == "helium" then null else pkgs.${packageName};
+        defaultText = lib.literalExpression (if browser == "helium" then "null" else "pkgs.${packageName}");
         description = "Browser package to install when ${browser} integration is enabled. Set null to register an already installed browser without managing its package. Custom packages must use the standard ${browser} native messaging locations.";
       };
     }) browserPackageNames;

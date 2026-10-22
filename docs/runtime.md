@@ -14,22 +14,35 @@ NVIDIA [documents](https://docs.nvidia.com/maxine/vfx/latest/LinuxVFXSDK/GetStar
 
 ## Conventional Linux
 
-The release/source tree includes a TypeScript **acquisition script** run with Bun 1.3.13+ and `unzip`:
+Install the application first and ensure `linux-rtx-vsr` is on PATH. The runtime installer needs `unzip`, `sha256sum`, standard GNU utilities, and either `curl` or `wget` for downloading. On Debian/Ubuntu, install missing tools with `sudo apt-get install curl unzip coreutils`.
 
 ```sh
-bun scripts/install-runtime.ts --accept-nvidia-license
+sh scripts/install-runtime.sh --accept-nvidia-license
 linux-rtx-vsr doctor --gpu
 ```
 
 It downloads the pinned VFX archive over HTTPS, verifies SHA-256 before extraction, retains license files, and configures absolute runtime paths. It never uses pip, root access, or ELF patching. It refuses to replace an existing runtime directory. A failed download can be retried; a partially extracted runtime is never installed. It can reuse a previously downloaded exact VFX wheel:
 
 ```sh
-bun scripts/install-runtime.ts --accept-nvidia-license --vfx-archive /path/to/nvidia_vfx-0.2.0.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+sh scripts/install-runtime.sh --accept-nvidia-license \
+  --vfx-archive /path/to/nvidia_vfx-0.2.0.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 ```
+
+Use `--binary /absolute/path/to/linux-rtx-vsr` if the app is outside PATH. The installer checks the application/configuration before downloading. If configuration fails after extraction, it retains the verified runtime and prints the exact `config set sdk_dir` command to finish setup. An existing runtime is never replaced silently.
+
+After deleting the extracted release folder, the installed script is still available:
+
+```sh
+sh "$HOME/.local/share/linux-rtx-vsr/scripts/install-runtime.sh" --help
+```
+
+Adjust this path for a custom application prefix. Runtime files themselves go under `${XDG_DATA_HOME:-$HOME/.local/share}/linux-rtx-vsr/runtime` independently of that prefix. NixOS requires the [Nix runtime wrapper](nix.md), rather than this conventional Linux installer.
 
 The SDK archive is separate from the tiny `nvidia-vfx` package on the default PyPI index. The installer uses NVIDIA's index URL, not that placeholder source distribution. Do not extract an arbitrary newer SDK over the pinned runtime and assume ABI compatibility.
 
-For an existing licensed installation:
+## Use an existing SDK
+
+For an existing licensed installation, skip the download and configure its libraries:
 
 ```sh
 linux-rtx-vsr config set sdk_dir /absolute/path/to/nvvfx/libs
@@ -44,7 +57,7 @@ Environment override `LINUX_RTX_VSR_SDK_DIR` takes precedence over the config fi
 
 ## Runtime updates
 
-Stop the backend first. Preserve the old runtime for rollback, install a separately verified new pinned version, and run the cold GPU test. Do not rewrite signed libraries. Updating the application does not automatically download or update NVIDIA software. For Nix, pin a new flake input and explicitly select the unfree output again.
+Stop the backend first with `linux-rtx-vsr stop`. Move the existing `runtime` directory to a backup path, run the new release's `scripts/install-runtime.sh --accept-nvidia-license`, and run `linux-rtx-vsr doctor --gpu`. Keep the backup until inference succeeds. To roll back, stop the backend, move the failed runtime aside and restore the backup to its original path. Do not rewrite signed libraries. Updating the application does not automatically download or update NVIDIA software. For Nix, pin a new flake input and explicitly select the unfree output again.
 
 ## Useful diagnostics
 

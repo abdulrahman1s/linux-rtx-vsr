@@ -20,6 +20,9 @@ let
     "chromium"
     "chrome"
     "brave"
+    "edge"
+    "vivaldi"
+    "helium"
   ];
   browserFixtures = lib.genAttrs browserNames (
     name: pkgs.writeShellScriptBin "vsr-test-${name}" "exit 0"
@@ -130,12 +133,17 @@ assert
   .config.environment.etc);
 assert builtins.hasAttr "chromium/native-messaging-hosts/${host}.json" osConfig.environment.etc;
 assert builtins.hasAttr "opt/chrome/native-messaging-hosts/${host}.json" osConfig.environment.etc;
+assert builtins.hasAttr "opt/edge/native-messaging-hosts/${host}.json" osConfig.environment.etc;
+assert builtins.hasAttr "opt/vivaldi/native-messaging-hosts/${host}.json" osConfig.environment.etc;
 assert
   osConfig.environment.etc."linux-rtx-vsr/extension".source
   == "${fakePackage}/share/linux-rtx-vsr/extension";
 assert builtins.hasAttr "google-chrome/NativeMessagingHosts/${host}.json" hm.xdg.configFile;
 assert builtins.hasAttr "BraveSoftware/Brave-Browser/NativeMessagingHosts/${host}.json"
   hm.xdg.configFile;
+assert builtins.hasAttr "microsoft-edge/NativeMessagingHosts/${host}.json" hm.xdg.configFile;
+assert builtins.hasAttr "vivaldi/NativeMessagingHosts/${host}.json" hm.xdg.configFile;
+assert builtins.hasAttr "net.imput.helium/NativeMessagingHosts/${host}.json" hm.xdg.configFile;
 # Both module systems install enabled browser packages and remove all module
 # contributions when disabled. Evaluate defaults lazily (Chrome is unfree).
 assert lib.all (

@@ -20,10 +20,11 @@ cargo test --locked
 bun install --frozen-lockfile --ignore-scripts
 bun run check
 bun test
+shellcheck -x scripts/install.sh scripts/install-runtime.sh scripts/runtime-archive.sh
 nix flake check
 ```
 
-Use the pinned Bun 1.3.13 from `nix develop` when updating dependencies, so the lockfile remains readable by both CI and Nix. Newer Bun versions can run the current scripts, but may emit a newer lockfile format when changing dependencies. `just package` requires `tar`, `zip` and `unzip`; the development shell supplies them. All repository scripts and release tests are TypeScript; Python is not required. `node:` imports use Bun's built-in compatibility modules and do not launch Node.js.
+Use the pinned Bun 1.3.13 from `nix develop` when updating dependencies, so the lockfile remains readable by both CI and Nix. Newer Bun versions can run the current scripts, but may emit a newer lockfile format when changing dependencies. `just package` requires `tar`, `zip` and `unzip`; the development shell supplies them. Build/release tooling and release tests use TypeScript; end-user installers use POSIX shell and standard Linux tools, with no Bun runtime requirement. Python is not required. `node:` imports use Bun's built-in compatibility modules and do not launch Node.js.
 
 ## Repository map
 

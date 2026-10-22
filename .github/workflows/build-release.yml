@@ -76,7 +76,8 @@ jobs:
       - name: Install browser fixture and packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg zip unzip
+          sudo apt-get install --yes --no-install-recommends ffmpeg zip unzip shellcheck
+      - run: shellcheck -x scripts/install.sh scripts/install-runtime.sh scripts/runtime-archive.sh
       - run: bun node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Browser failure and recovery checks (no GPU)
         run: bun run test:browser

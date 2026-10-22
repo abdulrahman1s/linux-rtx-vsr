@@ -18,11 +18,14 @@ try {
   const root = path.join(temporary, name);
   await mkdir(root);
   await cp('target/release/linux-rtx-vsr', path.join(root, 'linux-rtx-vsr'));
-  for (const item of ['README.md', 'LICENSE', 'THIRD_PARTY.md', 'docs', 'licenses', 'scripts'])
+  for (const item of ['README.md', 'LICENSE', 'THIRD_PARTY.md', 'docs', 'licenses'])
     await cp(item, path.join(root, item), {
       recursive: true,
       filter: (source) => !source.split(path.sep).includes('__pycache__'),
     });
+  await mkdir(path.join(root, 'scripts'));
+  for (const script of ['install.sh', 'install-runtime.sh', 'runtime-archive.sh'])
+    await cp(path.join('scripts', script), path.join(root, 'scripts', script));
   await cp('build/extension', path.join(root, 'extension'), { recursive: true });
   await collectLicenses(path.join(root, 'licenses/rust-dependencies.txt'));
   execFileSync('tar', ['-czf', path.resolve('dist', `${name}.tar.gz`), '-C', temporary, name]);

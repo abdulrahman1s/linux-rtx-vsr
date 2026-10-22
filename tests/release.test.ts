@@ -5,7 +5,25 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { bumpKind, plan } from '../scripts/release-plan.ts';
-import { extractVerifiedZip, sha256 } from '../scripts/archive.ts';
+import { sha256 } from '../scripts/archive.ts';
+
+// Exercise the same shell extractor used by release users, with local fixtures.
+async function extractRuntime(file: string, out: string, digest: string) {
+  execFileSync(
+    'sh',
+    [
+      '-eu',
+      '-c',
+      '. "$1"; extract_runtime_archive "$2" "$3" "$4"',
+      'runtime-extraction-test',
+      path.resolve('scripts/runtime-archive.sh'),
+      file,
+      out,
+      digest,
+    ],
+    { stdio: 'pipe' },
+  );
+}
 
 test('release versions move together without changing dependency resolutions', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'rtx-release-'));
@@ -147,8 +165,17 @@ test('runtime verifies digest and retains only allowed paths', async () => {
   try {
     const file = path.join(root, 'runtime.zip'),
       out = path.join(root, 'out');
-    await Bun.write(file, zip({ 'nvvfx/libs/test.so': 'runtime', 'nvvfx/__init__.py': 'skip' }));
-    await assert.rejects(extractVerifiedZip(file, out, '0'.repeat(64), ['nvvfx/libs/']), /SHA-256/);
+    await Bun.write(
+      file,
+      zip({
+        'nvvfx/libs/test.so': 'runtime',
+        'nvvfx/libs/test[1]?.so': 'literal pattern',
+        'nvidia_vfx.libs/dependency.so': 'dependency',
+        'nvidia_vfx-0.2.0.0.dist-info/licenses/LICENSE': 'retained license',
+        'nvvfx/__init__.py': 'skip',
+      }),
+    );
+    await assert.rejects(extractRuntime(file, out, '0'.repeat(64)), /SHA-256/);
     assert.equal(
       await access(out).then(
         () => true,
@@ -156,8 +183,20 @@ test('runtime verifies digest and retains only allowed paths', async () => {
       ),
       false,
     );
-    await extractVerifiedZip(file, out, await sha256(file), ['nvvfx/libs/']);
+    await extractRuntime(file, out, await sha256(file));
     assert.equal(await readFile(path.join(out, 'nvvfx/libs/test.so'), 'utf8'), 'runtime');
+    assert.equal(
+      await readFile(path.join(out, 'nvvfx/libs/test[1]?.so'), 'utf8'),
+      'literal pattern',
+    );
+    assert.equal(
+      await readFile(path.join(out, 'nvidia_vfx.libs/dependency.so'), 'utf8'),
+      'dependency',
+    );
+    assert.equal(
+      await readFile(path.join(out, 'nvidia_vfx-0.2.0.0.dist-info/licenses/LICENSE'), 'utf8'),
+      'retained license',
+    );
     assert.equal(
       await access(path.join(out, 'nvvfx/__init__.py')).then(
         () => true,
@@ -175,17 +214,12 @@ test('runtime rejects traversal and preexisting symlink parents', async () => {
     const file = path.join(root, 'runtime.zip'),
       out = path.join(root, 'out');
     await Bun.write(file, zip({ 'nvvfx/libs/../../../escape': 'bad' }));
-    await assert.rejects(
-      extractVerifiedZip(file, out, await sha256(file), ['nvvfx/libs/']),
-      /Unsafe/,
-    );
+    await assert.rejects(extractRuntime(file, out, await sha256(file)), /Unsafe/);
     await mkdir(out);
     await symlink(root, path.join(out, 'nvvfx'));
     await Bun.write(file, zip({ 'nvvfx/libs/test.so': 'bad' }));
-    await assert.rejects(
-      extractVerifiedZip(file, out, await sha256(file), ['nvvfx/libs/']),
-      /Unsafe/,
-    );
+    await assert.rejects(extractRuntime(file, out, await sha256(file)), /already exists/);
+    assert.equal(await Bun.file(path.join(root, 'libs/test.so')).exists(), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

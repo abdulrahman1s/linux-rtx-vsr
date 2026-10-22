@@ -41,6 +41,7 @@ release: build-ts
 
 # CPU-only static checks and tests; GPU and browser tests are separate tasks.
 check: fmt-check
+    shellcheck -x scripts/install.sh scripts/install-runtime.sh scripts/runtime-archive.sh
     cargo clippy --locked --all-targets -- -D warnings
     bun run check
     just test

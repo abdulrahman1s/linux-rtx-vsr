@@ -1,19 +1,127 @@
 #!/bin/sh
-# Run from an extracted release archive. No root access or network required.
+# Install an extracted release for the current user. No network or root required.
 set -eu
-archive_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-install_prefix=${LINUX_RTX_VSR_PREFIX:-"$HOME/.local"}
-if [ ! -f "$archive_root/linux-rtx-vsr" ]; then
-  echo 'Run this installer from an extracted release archive; source builds use cargo install --locked --path .' >&2
-  exit 1
-fi
-mkdir -p "$install_prefix/bin" "$install_prefix/share/linux-rtx-vsr"
-install -m755 "$archive_root/linux-rtx-vsr" "$install_prefix/bin/linux-rtx-vsr.new"
-mv "$install_prefix/bin/linux-rtx-vsr.new" "$install_prefix/bin/linux-rtx-vsr"
-for entry in README.md LICENSE THIRD_PARTY.md docs licenses extension scripts; do
-  cp -R "$archive_root/$entry" "$install_prefix/share/linux-rtx-vsr/"
+
+die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+usage() {
+  cat <<'EOF'
+Usage: sh scripts/install.sh [--prefix DIRECTORY] [--browser BROWSER] [--add-to-path]
+
+Install the application and documentation without downloading NVIDIA software.
+  --prefix DIRECTORY  Absolute install prefix (default: $HOME/.local).
+                      LINUX_RTX_VSR_PREFIX also sets this default.
+  --browser BROWSER   Also register native messaging and export the extension.
+                      See the README for browser names.
+  --add-to-path       Add the installed bin directory to your shell startup file.
+                      Supports Bash, Zsh, Fish and POSIX sh; uses $SHELL.
+  -h, --help          Show this help.
+
+Run as your normal user. Existing runtime, configuration and state are retained.
+EOF
+}
+
+install_prefix=${LINUX_RTX_VSR_PREFIX:-"${HOME:?HOME must be set}/.local"}
+browser=
+add_to_path=false
+shell_name=${SHELL:-sh}
+shell_name=${shell_name##*/}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prefix|--browser)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"
+      case "$1" in --prefix) install_prefix=$2 ;; --browser) browser=$2 ;; esac
+      shift 2 ;;
+    --add-to-path) add_to_path=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown option: $1 (use --help)" ;;
+  esac
 done
-echo "Installed $install_prefix/bin/linux-rtx-vsr"
-echo "Add $install_prefix/bin to PATH if necessary."
-echo 'Next: install the NVIDIA runtime (docs/runtime.md), then run:'
-echo '  linux-rtx-vsr integration install --browser chromium'
+case "$install_prefix" in /*) ;; *) die '--prefix must be an absolute path' ;; esac
+case "$browser" in
+  ''|chromium|chrome|chrome-beta|chrome-dev|brave|brave-beta|brave-nightly|brave-origin|brave-origin-nightly|edge|edge-beta|edge-dev|vivaldi|vivaldi-snapshot|helium) ;;
+  *) die "Unsupported browser: $browser (use --help)" ;;
+esac
+for tool in dirname mkdir mktemp install cp mv rm; do
+  command -v "$tool" >/dev/null 2>&1 || die "Required command not found: $tool"
+done
+if [ "$add_to_path" = true ]; then
+  for tool in sed grep; do
+    command -v "$tool" >/dev/null 2>&1 || die "Required command not found: $tool"
+  done
+  case "$install_prefix" in
+    *:*|*'
+'*) die '--add-to-path requires a prefix without colons or newlines' ;;
+  esac
+  case "$shell_name" in
+    bash) startup="$HOME/.bashrc" ;;
+    zsh) startup="${ZDOTDIR:-$HOME}/.zshrc" ;;
+    fish) startup="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/linux-rtx-vsr.fish" ;;
+    sh|dash|'') startup="$HOME/.profile" ;;
+    *) die "--add-to-path does not support $SHELL; use Bash, Zsh, Fish or sh" ;;
+  esac
+  [ ! -e "$startup" ] || [ -w "$startup" ] || die "Shell startup file is not writable: $startup"
+fi
+archive_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+[ -f "$archive_root/linux-rtx-vsr" ] || die 'Use an extracted release archive. Source builds: cargo install --locked --path .'
+for entry in README.md LICENSE THIRD_PARTY.md docs licenses extension scripts; do
+  [ -e "$archive_root/$entry" ] || die "Incomplete release archive: missing $entry"
+done
+
+mkdir -p "$install_prefix/bin" "$install_prefix/share/linux-rtx-vsr"
+binary="$install_prefix/bin/linux-rtx-vsr"
+data="$install_prefix/share/linux-rtx-vsr"
+staging=
+binary_tmp=
+cleanup() {
+  [ -z "$staging" ] || rm -rf -- "$staging"
+  [ -z "$binary_tmp" ] || rm -f -- "$binary_tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+staging=$(mktemp -d "$install_prefix/share/.linux-rtx-vsr.XXXXXX")
+binary_tmp=$(mktemp "$install_prefix/bin/.linux-rtx-vsr.XXXXXX")
+install -m755 "$archive_root/linux-rtx-vsr" "$binary_tmp"
+# Detect an incompatible binary/libc before changing an existing installation.
+"$binary_tmp" --version
+for entry in README.md LICENSE THIRD_PARTY.md docs licenses extension scripts; do
+  cp -R -- "$archive_root/$entry" "$staging/$entry"
+done
+if [ -x "$binary" ]; then
+  "$binary" stop
+fi
+# Replace only release-owned entries; the runtime and user data may share data.
+for entry in README.md LICENSE THIRD_PARTY.md docs licenses extension scripts; do
+  rm -rf -- "${data:?}/${entry:?}"
+  mv -- "$staging/$entry" "$data/$entry"
+done
+mv -f -- "$binary_tmp" "$binary"
+binary_tmp=
+printf '\nInstalled %s\nDocumentation: %s/README.md\n' "$binary" "$data"
+if [ "$add_to_path" = true ]; then
+  if [ "$shell_name" = fish ]; then
+    escaped_bin=$(printf '%s' "$install_prefix/bin" | sed 's/[\\"$]/\\&/g')
+    path_line="fish_add_path --path \"$escaped_bin\" # linux-rtx-vsr PATH"
+  else
+    escaped_bin=$(printf '%s' "$install_prefix/bin" | sed 's/[\\"$`]/\\&/g')
+    path_line="case \":\$PATH:\" in *\":$escaped_bin:\"*) ;; *) export PATH=\"$escaped_bin:\$PATH\" ;; esac # linux-rtx-vsr PATH"
+  fi
+  mkdir -p -- "$(dirname -- "$startup")"
+  if [ ! -f "$startup" ] || ! grep -Fqx -- "$path_line" "$startup"; then
+    printf '\n%s\n' "$path_line" >> "$startup"
+  fi
+  printf 'PATH configured in %s. Open a new terminal to use linux-rtx-vsr by name.\n' "$startup"
+fi
+if [ -n "$browser" ]; then
+  "$binary" integration install --browser "$browser"
+else
+  printf 'Next: "%s" integration install --browser chromium\n' "$binary"
+fi
+printf 'Runtime setup: sh "%s/scripts/install-runtime.sh" --binary "%s" --accept-nvidia-license\n' "$data" "$binary"
+case ":${PATH:-}:" in
+  *":$install_prefix/bin:"*) ;;
+  *)
+    if [ "$add_to_path" = false ]; then
+      printf 'Use --add-to-path to add %s/bin to your shell startup file.\n' "$install_prefix"
+    fi ;;
+esac

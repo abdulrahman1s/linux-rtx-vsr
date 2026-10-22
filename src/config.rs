@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -180,17 +180,53 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     }
     result
 }
+// Standard Linux native messaging locations; see docs/browsers.md for references.
+pub const BROWSERS: &[(&str, &str)] = &[
+    ("chromium", "chromium"),
+    ("chrome", "google-chrome"),
+    ("chrome-beta", "google-chrome-beta"),
+    ("chrome-dev", "google-chrome-unstable"),
+    ("brave", "BraveSoftware/Brave-Browser"),
+    ("brave-beta", "BraveSoftware/Brave-Browser-Beta"),
+    ("brave-nightly", "BraveSoftware/Brave-Browser-Nightly"),
+    ("brave-origin", "BraveSoftware/Brave-Origin"),
+    ("brave-origin-nightly", "BraveSoftware/Brave-Origin-Nightly"),
+    ("edge", "microsoft-edge"),
+    ("edge-beta", "microsoft-edge-beta"),
+    ("edge-dev", "microsoft-edge-dev"),
+    ("vivaldi", "vivaldi"),
+    ("vivaldi-snapshot", "vivaldi-snapshot"),
+    ("helium", "net.imput.helium"),
+];
+
 pub fn browser_dir(browser: &str) -> Result<PathBuf> {
-    let root = dirs::config_dir().context("No config directory")?;
-    Ok(match browser {
-        "chromium" => root.join("chromium"),
-        "chrome" => root.join("google-chrome"),
-        "brave" => root.join("BraveSoftware/Brave-Browser"),
-        "brave-origin" => root.join("BraveSoftware/Brave-Origin"),
-        "brave-origin-nightly" => root.join("BraveSoftware/Brave-Origin-Nightly"),
-        _ => bail!("Browser must be chromium, chrome, brave, brave-origin, or brave-origin-nightly (custom profiles: --manifest-dir)"),
+    let (_, directory) = BROWSERS
+        .iter()
+        .find(|(name, _)| *name == browser)
+        .with_context(|| {
+            format!(
+                "Unknown browser {browser}; choose {} (custom locations: --manifest-dir)",
+                BROWSERS
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+    let root = if browser == "chromium" || browser.starts_with("chrome") {
+        std::env::var_os("CHROME_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(dirs::config_dir)
+    } else {
+        dirs::config_dir()
     }
-    .join("NativeMessagingHosts"))
+    .context("No config directory")?;
+    ensure!(
+        root.is_absolute(),
+        "Browser config directory must be absolute"
+    );
+    Ok(root.join(directory).join("NativeMessagingHosts"))
 }
 
 pub fn installed_extension(data: &Path, etc: &Path) -> PathBuf {

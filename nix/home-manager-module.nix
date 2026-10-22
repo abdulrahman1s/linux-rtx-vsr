@@ -19,6 +19,9 @@ let
     chromium = "chromium";
     chrome = "google-chrome";
     brave = "BraveSoftware/Brave-Browser";
+    edge = "microsoft-edge";
+    vivaldi = "vivaldi";
+    helium = "net.imput.helium";
   };
   optional =
     type: description:

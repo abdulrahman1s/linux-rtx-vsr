@@ -94,12 +94,20 @@
           pkgs.chromium
           pkgs.nixfmt
           pkgs.just
+          pkgs.shellcheck
         ];
         LD_LIBRARY_PATH = "/run/opengl-driver/lib";
         CHROMIUM_PATH = "${pkgs.chromium}/bin/chromium";
       };
       formatter.${system} = pkgs.nixfmt;
       checks.${system} = {
+        installers =
+          pkgs.runCommand "linux-rtx-vsr-installer-checks" { nativeBuildInputs = [ pkgs.shellcheck ]; }
+            ''
+              cd ${source}
+              shellcheck -x scripts/install.sh scripts/install-runtime.sh scripts/runtime-archive.sh
+              touch $out
+            '';
         modules = import ./nix/module-tests.nix {
           inherit self pkgs home-manager;
         };

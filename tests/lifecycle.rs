@@ -12,8 +12,61 @@ fn cli(root: &std::path::Path, args: &[&str]) -> Output {
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_DATA_HOME", root.join("data"))
+        .env_remove("CHROME_CONFIG_HOME")
         .output()
         .unwrap()
+}
+#[test]
+fn browser_registration_install_and_remove() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let browsers = [
+        ("chromium", "chromium"),
+        ("chrome", "google-chrome"),
+        ("chrome-beta", "google-chrome-beta"),
+        ("chrome-dev", "google-chrome-unstable"),
+        ("brave", "BraveSoftware/Brave-Browser"),
+        ("brave-beta", "BraveSoftware/Brave-Browser-Beta"),
+        ("brave-nightly", "BraveSoftware/Brave-Browser-Nightly"),
+        ("brave-origin", "BraveSoftware/Brave-Origin"),
+        ("brave-origin-nightly", "BraveSoftware/Brave-Origin-Nightly"),
+        ("edge", "microsoft-edge"),
+        ("edge-beta", "microsoft-edge-beta"),
+        ("edge-dev", "microsoft-edge-dev"),
+        ("vivaldi", "vivaldi"),
+        ("vivaldi-snapshot", "vivaldi-snapshot"),
+        ("helium", "net.imput.helium"),
+    ];
+    for (browser, directory) in browsers {
+        let installed = cli(root, &["integration", "install", "--browser", browser]);
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        assert!(String::from_utf8_lossy(&installed.stdout).contains("Extension directory:"));
+        let manifest = root
+            .join("config")
+            .join(directory)
+            .join("NativeMessagingHosts/io.github.abdulrahman1s.linux_rtx_vsr.json");
+        let value: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            value["allowed_origins"],
+            json!(["chrome-extension://pdobgdmlfcnimbnndkchfocncchfoadm/"])
+        );
+        assert!(std::path::Path::new(value["path"].as_str().unwrap()).is_file());
+        assert!(
+            cli(root, &["integration", "remove", "--browser", browser])
+                .status
+                .success()
+        );
+        assert!(!manifest.exists());
+    }
+    assert!(
+        !cli(root, &["integration", "install", "--browser", "firefox"])
+            .status
+            .success()
+    );
 }
 #[test]
 fn backend_lifecycle_origin_security_and_idle_exit() {

@@ -1,6 +1,59 @@
 # Linux RTX VSR
 
-Enhance browser video locally with **NVIDIA VideoSuperRes**, a Rust application, and a Chromium extension. The extension places an enhanced picture over the original video and keeps its player and audio. This is an independent, experimental community project for `abdulrahman1s/linux-rtx-vsr`.
+Enhance browser video locally with **NVIDIA VideoSuperRes** and a Chromium extension. The extension places an enhanced picture over the original video while keeping its player, controls, and audio. Processing runs on your NVIDIA GPU; video never leaves your computer.
+
+This is an independent, experimental community project, not an NVIDIA product.
+
+## Before you install
+
+- **Linux x86-64** with an NVIDIA RTX **Ada or Blackwell** GPU that supports AV1 encoding. Older RTX Turing/Ampere cards are unsupported.
+- A compatible **NVIDIA driver**, including CUDA and NVENC driver libraries. Confirm `nvidia-smi` works. See [driver and runtime requirements](docs/runtime.md#nvidia-runtime-setup).
+- **Chromium 140+**, installed outside Flatpak/Snap. Chrome and Brave integration is available, but support varies by build.
+- **SDR video** in a top-level page. DRM-protected video and HDR are unsupported.
+
+For installation, have **`curl` (or `wget`) and `unzip`** available alongside your distribution's standard command-line tools. NVIDIA's runtime is downloaded separately after you accept its terms.
+
+**NixOS:** use the [Nix installation guide](docs/nix.md#recommended-declarative-modules). The release archive targets conventional glibc Linux distributions with **glibc 2.39+**; use a [source build](#build-from-source) for older glibc systems.
+
+## Install
+
+### 1. Install the app and browser integration
+
+Download `linux-rtx-vsr-vVERSION-x86_64-unknown-linux-gnu.tar.gz` from [GitHub Releases](https://github.com/abdulrahman1s/linux-rtx-vsr/releases). Open a terminal in the download directory and run these commands with only one release archive present:
+
+```sh
+tar -xzf linux-rtx-vsr-v*-x86_64-unknown-linux-gnu.tar.gz &&
+  cd linux-rtx-vsr-v*-x86_64-unknown-linux-gnu &&
+  sh scripts/install.sh --browser chromium --add-to-path
+```
+
+Run the installer as your normal user, without `sudo`. It installs into `~/.local`, prints the extension directory, and adds the command to PATH for new terminals. Bash, Zsh, and Fish are supported. The separate extension ZIP is unnecessary for this install.
+
+For another browser, replace `chromium` with `helium`, `vivaldi`, `edge`, `chrome`, or `brave`. See [all browser options](docs/browsers.md), including beta/dev channels and Brave Origin. To choose a different application location, pass `--prefix /absolute/path`; `--add-to-path` uses that location too.
+
+### 2. Install the NVIDIA runtime
+
+Review [NVIDIA's separate runtime and model terms](docs/runtime.md), then run from the same extracted directory:
+
+```sh
+sh scripts/install-runtime.sh --accept-nvidia-license &&
+  "$HOME/.local/bin/linux-rtx-vsr" doctor --gpu
+```
+
+The script downloads the pinned NVIDIA archive, checks its SHA-256, retains its license files, and configures the app. `doctor --gpu` must succeed before you try enhancement: it checks the driver/runtime and runs real GPU inference. If it fails, follow its diagnostic output and the [runtime guide](docs/runtime.md).
+
+Already have a licensed SDK? [Configure its path instead](docs/runtime.md#use-an-existing-sdk). For offline setup, use `--vfx-archive /absolute/path/to/the/pinned.whl`. For a custom app location, pass `--binary /absolute/path/to/linux-rtx-vsr`. No NVIDIA libraries or models are included in our release archives.
+
+### 3. Load the extension and play a video
+
+1. Open `chrome://extensions` in your chosen browser.
+2. Enable **Developer mode**, click **Load unpacked**, and select the **extension directory printed by the installer**. The default is `~/.local/share/linux-rtx-vsr/extension`; use the folder picker to open this path under your home directory.
+3. Pin **Linux RTX VSR** to the toolbar.
+4. Start an SDR video on YouTube. Enhancement turns on automatically. On another site, click the extension and choose **Enable for this tab**.
+
+The backend starts on demand. The **`ON` badge** means fresh enhanced frames are being displayed. The popup explains errors and shows source/output sizes and performance. Choose an **Output target** of 720p, 1080p, 1440p, 4K (default), or experimental 8K. Aspect ratio is preserved; videos already at or above the target keep their original picture.
+
+Keep the installed executable and exported extension at their installed paths. You can delete the extracted release directory after setup. Branded browsers may use their standard native messaging location even with a custom `--user-data-dir`; the popup's backend check confirms whether integration works. For custom registration paths, see `linux-rtx-vsr integration install --help`.
 
 ## Compatibility
 
@@ -11,41 +64,11 @@ The initial target is **Linux x86-64, Chromium 140+, and an NVIDIA RTX GPU** sup
 | RTX 5090, driver 595.104.02, NixOS, VFX 1.3 / wheel 0.2.0.0  | Real Rust GPU inference verified; see [validation record](docs/validation.md) for browser results                                               |
 | Chromium 148.0.7778.178; Brave Origin 1.97.59 / Chromium 155 | Visible AV1 playback tested on the host above; see [scope and measurements](docs/validation.md#av1-transport-and-resolution-targets-2026-10-22) |
 | Other RTX Ada / Blackwell GPUs with AV1 NVENC                | Expected with compatible VFX/AV1 NVENC; not tested here                                                                                         |
-| Google Chrome / other Brave builds                           | Native manifest installers included; playback compatibility unverified                                                                          |
+| Helium, Vivaldi, Edge, Chrome, other Brave builds            | Native manifest installers included; playback compatibility unverified                                                                          |
 | Other Linux distributions                                    | Expected with glibc 2.39+ for release binaries; source builds can use their host libc; unverified                                               |
 | Firefox, ARM, RTX without AV1 encode, protected video, HDR   | Unsupported                                                                                                                                     |
 
 NVIDIA lists branch-specific minimum drivers for VSR (570.190+, 580.82+, or 590.44+) and describes its Linux SDK as server-oriented. Desktop integration is experimental. Review [runtime requirements and terms](docs/runtime.md) before installation.
-
-## Install
-
-For NixOS, use the [Nix instructions](docs/nix.md). For a conventional glibc Linux distribution:
-
-1. Download the Linux archive and `SHA256SUMS` from [Releases](https://github.com/abdulrahman1s/linux-rtx-vsr/releases) into an empty folder. Releases become available after this repository is published and its release workflow succeeds. Verify and extract it:
-
-   ```sh
-   sha256sum --ignore-missing --check SHA256SUMS
-   tar -xzf linux-rtx-vsr-v*-x86_64-unknown-linux-gnu.tar.gz
-   cd linux-rtx-vsr-v*-x86_64-unknown-linux-gnu
-   sh scripts/install.sh
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
-
-2. Install the NVIDIA runtime after reviewing [its separate licenses](docs/runtime.md):
-
-   ```sh
-   bun scripts/install-runtime.ts --accept-nvidia-license
-   linux-rtx-vsr integration install --browser chromium
-   linux-rtx-vsr doctor --gpu
-   ```
-
-   Bun 1.3.13+ and `unzip` are used only to download, verify, and extract runtime archives. The application and inference run in Rust. You can instead point configuration at an existing licensed SDK installation. NVENC comes from the installed NVIDIA driver. No nvJPEG or CUDA toolkit is required. No proprietary libraries or models are shipped in our release archives.
-
-## Install the extension and enhance a video
-
-Open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the directory printed by `integration install` (normally `~/.local/share/linux-rtx-vsr/extension`). Pin **Linux RTX VSR** to the toolbar. On YouTube, start an SDR video: enhancement is enabled automatically by default. On other sites, start playback, click the toolbar icon and choose **Enable for this tab**. The engine starts on demand. Choose an **Output target** in the popup: 720p, 1080p, 1440p, 4K (default), or experimental 8K. Scaling is calculated for each source, preserving aspect ratio; videos already at or above the target use the original.
-
-Use `--browser chrome`, `--browser brave`, or `--browser brave-origin` for their standard native messaging locations (`brave-origin-nightly` is also available). Branded browsers can use their compiled default location even with a custom `--user-data-dir`; the popup's backend check verifies discovery. Flatpak/Snap browser sandboxes are not supported. Refresh already-open video pages after updating the extension to clear older content scripts.
 
 ## Automatically enhance a site
 
@@ -87,15 +110,19 @@ Configuration uses `$XDG_CONFIG_HOME/linux-rtx-vsr`, state/logs use `$XDG_STATE_
 
 Pausing holds the enhanced picture. Quick resume reuses the decoder; longer pauses release processing resources while retaining one frozen picture. A slow cold restart can briefly show original playback. SDR capture, encoding and presentation carry explicit color information to avoid an extra tint when enhancement turns on.
 
-## Source builds and development
+## Build from source
 
 Install Rust 1.88+, Bun 1.3.13+, and a C compiler/linker and ar. No NVIDIA SDK headers, Python application, or original-project checkout is required to build:
 
 ```sh
-cargo build --locked --release
 cargo install --locked --path .
+export PATH="$HOME/.cargo/bin:$PATH"
 linux-rtx-vsr integration install --browser chromium
+sh scripts/install-runtime.sh --accept-nvidia-license
+linux-rtx-vsr doctor --gpu
 ```
+
+Then [load the exported extension](#3-load-the-extension-and-play-a-video). Bun is needed to compile the extension during a source build; it is not needed to run the installed app.
 
 For Nix:
 
@@ -109,7 +136,9 @@ For declarative installation, import `nixosModules.default` or `homeManagerModul
 
 The default Nix package contains the free application and extension. Runtime setup is separate; [Nix setup](docs/nix.md) includes an opt-in package that supplies the proprietary runtime without modifying signed libraries.
 
-For development, `nix develop` includes Bun and Just. `just` lists all tasks:
+## Development
+
+`nix develop` includes Bun and Just. `just` lists all tasks:
 
 ```sh
 just install
@@ -150,7 +179,15 @@ The native API listens only on loopback with exact extension-origin checking and
 
 ## Updates and removal
 
-For an update, stop the backend, verify/extract the new archive, rerun `scripts/install.sh`, and rerun `integration install` to export matching extension assets. Reload the extension and refresh video tabs. Source installs use `cargo install --locked --path . --force`; Nix installs update their pinned flake input. Keep application and extension versions together. Runtime updates are separate and must preserve NVIDIA's signed files.
+For a release update, download and extract the new archive as above, then run:
+
+```sh
+sh scripts/install.sh --browser chromium --add-to-path
+```
+
+Use the same prefix and browser as your original installation. The installer stops the old backend, replaces the app and bundled files, and exports matching extension assets. Register each additional browser again with `integration install --browser BROWSER`. Click **Reload** on the extension in `chrome://extensions`, then refresh open video tabs.
+
+Your configuration, site rules, and NVIDIA runtime are retained; do not rerun the runtime installer for an ordinary application update. Source installs use `linux-rtx-vsr stop` followed by `cargo install --locked --path . --force` and `integration install`; Nix installs update their pinned flake input and rebuild. Keep application and extension versions together. See [runtime updates](docs/runtime.md#runtime-updates) for separate NVIDIA updates.
 
 To remove everything installed per user:
 
@@ -163,9 +200,15 @@ linux-rtx-vsr integration remove --browser chromium
 Remove the extension in `chrome://extensions`, refresh video tabs, then remove the following **project-owned directories** (adjust XDG paths and any custom install prefix):
 
 ```sh
-rm -f ~/.local/bin/linux-rtx-vsr
-rm -rf ~/.local/share/linux-rtx-vsr ~/.local/state/linux-rtx-vsr ~/.config/linux-rtx-vsr
+rm -f "$HOME/.local/bin/linux-rtx-vsr"
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/linux-rtx-vsr" \
+  "${XDG_STATE_HOME:-$HOME/.local/state}/linux-rtx-vsr" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/linux-rtx-vsr"
 ```
+
+With a custom prefix, also remove its `bin/linux-rtx-vsr` and `share/linux-rtx-vsr` paths. Source installs normally place the executable in `~/.cargo/bin`.
+
+If you used `--add-to-path`, remove the line ending in `# linux-rtx-vsr PATH` from the startup file printed by the installer (or remove `fish/conf.d/linux-rtx-vsr.fish` for Fish).
 
 Nix users remove the package from their profile/configuration as well. An externally managed SDK or NVIDIA driver is not removed. No system services are installed.
 

@@ -90,7 +90,7 @@ enum ConfigAction {
 #[derive(Subcommand)]
 enum IntegrationAction {
     Install {
-        #[arg(long, default_value = "chromium")]
+        #[arg(long, default_value = "chromium", value_parser = clap::builder::PossibleValuesParser::new(config::BROWSERS.iter().map(|(name, _)| *name)))]
         browser: String,
         #[arg(long)]
         manifest_dir: Option<PathBuf>,
@@ -98,7 +98,7 @@ enum IntegrationAction {
         extension_id: String,
     },
     Remove {
-        #[arg(long, default_value = "chromium")]
+        #[arg(long, default_value = "chromium", value_parser = clap::builder::PossibleValuesParser::new(config::BROWSERS.iter().map(|(name, _)| *name)))]
         browser: String,
         #[arg(long)]
         manifest_dir: Option<PathBuf>,
@@ -225,8 +225,9 @@ fn integration(paths: &Paths, action: IntegrationAction) -> Result<()> {
             records.insert(manifest.to_string_lossy().into_owned(), json!(executable));
             atomic_write(&record_path, &serde_json::to_vec_pretty(&records)?, 0o600)?;
             println!(
-                "Installed {}\nReload the extension and refresh video tabs. Run doctor to check runtime setup.",
-                manifest.display()
+                "Installed {}\nExtension directory: {}\nOpen chrome://extensions, enable Developer mode, and choose Load unpacked.\nAfter updates, reload the extension and refresh video tabs. Run doctor to check runtime setup.",
+                manifest.display(),
+                paths.data.join("extension").display()
             );
         }
         IntegrationAction::Remove {
@@ -371,13 +372,7 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     );
     let mut found = false;
     let mut manifests = Vec::new();
-    for browser in [
-        "chromium",
-        "chrome",
-        "brave",
-        "brave-origin",
-        "brave-origin-nightly",
-    ] {
+    for (browser, _) in config::BROWSERS {
         manifests.push((
             format!("{browser} user"),
             config::browser_dir(browser)?.join(format!("{}.json", daemon::HOST)),
@@ -386,6 +381,8 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     for (browser, dir) in [
         ("chromium", "/etc/chromium/native-messaging-hosts"),
         ("chrome/brave", "/etc/opt/chrome/native-messaging-hosts"),
+        ("edge", "/etc/opt/edge/native-messaging-hosts"),
+        ("vivaldi", "/etc/opt/vivaldi/native-messaging-hosts"),
         (
             "Nix sandbox registry (browser visibility requires a browser check)",
             "/etc/linux-rtx-vsr/native-messaging-hosts",
@@ -446,7 +443,7 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     report(
         "Browser native integration",
         found,
-        "For Brave Origin use integration install --browser brave-origin; for Nix-managed integration check the declarative manifest and sandbox mounts",
+        "Run integration install --browser BROWSER (see --help); for Nix-managed integration check the declarative manifest and sandbox mounts",
     );
     println!(
         "Browser WebCodecs, CORS, audible sync, and visible overlay require the browser fixture; native checks cannot certify them."
