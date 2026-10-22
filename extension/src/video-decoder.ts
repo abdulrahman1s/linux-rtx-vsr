@@ -27,14 +27,15 @@ export function createPacketDecoder(): PacketDecoder {
       if (
         meta.format !== 'av1' ||
         !/^av01\.0\.\d{2}[MH]\.08$/.test(meta.codec) ||
-        typeof meta.keyframe !== 'boolean'
+        typeof meta.keyframe !== 'boolean' ||
+        !['srgb', 'bt709'].includes(meta.color_space)
       )
         throw new Error(
           'Expected NVENC AV1 packets; update the application and extension together',
         );
       if (typeof VideoDecoder === 'undefined')
         throw new Error('This browser does not expose WebCodecs VideoDecoder');
-      const nextKey = `${meta.codec}/${meta.width}/${meta.height}`;
+      const nextKey = `${meta.codec}/${meta.width}/${meta.height}/${meta.color_space}`;
       if (key !== nextKey) {
         key = nextKey;
         const previous = configuring;
@@ -47,6 +48,12 @@ export function createPacketDecoder(): PacketDecoder {
             codec: meta.codec,
             codedWidth: meta.width,
             codedHeight: meta.height,
+            colorSpace: {
+              primaries: 'bt709',
+              transfer: meta.color_space === 'srgb' ? 'iec61966-2-1' : 'bt709',
+              matrix: 'smpte170m',
+              fullRange: false,
+            },
             hardwareAcceleration: 'prefer-hardware',
             optimizeForLatency: true,
           };

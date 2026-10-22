@@ -109,6 +109,7 @@ export interface FrameMetadata extends FrameTimings {
   inference_ms: number;
   format: 'av1';
   codec: string;
+  color_space: 'srgb' | 'bt709';
   keyframe: boolean;
 }
 export type CaptureMessage =

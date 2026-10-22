@@ -85,6 +85,8 @@ The extension offers AI Low–Ultra and source-independent output targets throug
 
 Configuration uses `$XDG_CONFIG_HOME/linux-rtx-vsr`, state/logs use `$XDG_STATE_HOME/linux-rtx-vsr`, and extension/runtime assets use `$XDG_DATA_HOME/linux-rtx-vsr`. Defaults follow the normal `~/.config`, `~/.local/state`, and `~/.local/share` locations.
 
+Pausing holds the enhanced picture. Quick resume reuses the decoder; longer pauses release processing resources while retaining one frozen picture. A slow cold restart can briefly show original playback. SDR capture, encoding and presentation carry explicit color information to avoid an extra tint when enhancement turns on.
+
 ## Source builds and development
 
 Install Rust 1.88+, Bun 1.3.13+, and a C compiler/linker and ar. No NVIDIA SDK headers, Python application, or original-project checkout is required to build:
@@ -138,7 +140,7 @@ See [development and browser tests](docs/development.md), [architecture](docs/ar
 - **Native host not found:** run `integration install` for the correct browser/profile. Keep the installed executable at a stable path, then reload the extension.
 - **Runtime cannot load / GPU inference fails:** run `doctor --gpu`; check `sdk_dir`, `libcuda.so.1`/`libnvidia-encode.so.1`, driver libraries, GPU support, and available VRAM. See [runtime setup](docs/runtime.md). NixOS must use the Nix instructions.
 - **Audio requires a gesture:** play the video and enable again. Browsers can block Web Audio until a playback gesture.
-- **Original video remains visible:** inspect the popup reason. Errors, stale frames, seeking, paused/hidden tabs, native video fullscreen, and oversized output restore the original.
+- **Original video remains visible:** inspect the popup reason. Errors, sustained stale output, seeking, hidden tabs, native video fullscreen, and oversized output restore the original. Pause normally holds the last enhanced picture.
 - **Video cannot be captured:** DRM, tainted/CORS-restricted video, embedded players, HDR, and unsupported color spaces cannot be processed. There is no protection bypass. Codec support depends on the browser; readable SDR decoded frames are required.
 - **Controls and captions:** DOM controls/captions above the video layer are preserved. Native controls temporarily bypass enhancement on hover/focus; native text tracks bypass it while showing. Picture-in-picture and direct video-element fullscreen show the original. Player-container fullscreen can include the overlay. Unusual stacking, transforms, clipping, or player layouts may require site-specific work.
 - **Audio synchronization:** a Web Audio delay follows measured processing age; pictures are scheduled against audible time. Device latency reporting and site behavior vary. Audible flash/beep validation on real audio hardware is still required. Once attached, the browser cannot detach a `MediaElementAudioSourceNode`; disabling removes the added delay, and refreshing fully restores the browser's original audio path.

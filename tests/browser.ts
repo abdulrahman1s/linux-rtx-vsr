@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { observeMedia } from './media-observer.ts';
 import { launchFixtureBrowser, type FixtureBrowser } from './browser-launch.ts';
 const gpu = process.env.VSR_GPU_TEST === '1';
+const colorTest = process.env.VSR_COLOR_TEST === '1';
 const extraBrowserArgs: unknown = JSON.parse(process.env.VSR_BROWSER_ARGS || '[]');
 if (!Array.isArray(extraBrowserArgs) || !extraBrowserArgs.every((arg) => typeof arg === 'string'))
   throw new Error('VSR_BROWSER_ARGS must be a JSON array of browser flags');
@@ -40,7 +41,7 @@ execFileSync('ffmpeg', [
   '-f',
   'lavfi',
   '-i',
-  `testsrc2=size=${fixtureSize}:rate=${fixtureFps}`,
+  `${colorTest ? 'smptehdbars' : 'testsrc2'}=size=${fixtureSize}:rate=${fixtureFps}`,
   '-f',
   'lavfi',
   '-i',
@@ -53,6 +54,9 @@ execFileSync('ffmpeg', [
   'realtime',
   '-cpu-used',
   '8',
+  ...(colorTest
+    ? ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709']
+    : []),
   '-c:a',
   'libopus',
   video,
@@ -372,9 +376,186 @@ try {
     }
     await page.click('#play');
     await waitState((v) => v?.state === 'paused');
-    assert.equal(await page.locator('.player iframe').count(), 0);
+    const overlay = await page.locator('.player iframe').elementHandle();
+    assert.ok(overlay);
+    assert.equal(await overlay.evaluate((e) => getComputedStyle(e).opacity), '1');
+    // Verify both the DOM lifetime and every compositor tick during a quick
+    // pause/resume. Recreating the iframe or hiding it caused the old flash.
+    await page.waitForTimeout(300);
+    if (colorTest) {
+      const player = page.locator('.player');
+      const enhanced = await player.screenshot({ scale: 'css' });
+      await overlay.evaluate((e) => {
+        e.style.visibility = 'hidden';
+      });
+      const original = await player.screenshot({ scale: 'css' });
+      await overlay.evaluate((e) => {
+        e.style.visibility = '';
+      });
+      const rgb = (png: Buffer) =>
+        execFileSync(
+          'ffmpeg',
+          [
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-i',
+            'pipe:0',
+            '-f',
+            'rawvideo',
+            '-pix_fmt',
+            'rgb24',
+            'pipe:1',
+          ],
+          { input: png, maxBuffer: 4 * 1024 * 1024 },
+        );
+      const a = rgb(original),
+        b = rgb(enhanced);
+      const width = original.readUInt32BE(16),
+        height = original.readUInt32BE(20);
+      assert.equal(a.length, width * height * 3);
+      assert.equal(b.length, a.length);
+      assert.equal(enhanced.readUInt32BE(16), width);
+      assert.equal(enhanced.readUInt32BE(20), height);
+      // Static, flat SMPTE HD patches avoid motion, model edge sharpening,
+      // 4:2:0 chroma boundaries, captions and the player's buttons.
+      const samples = [0.15, 0.25, 0.35, 0.5, 0.65, 0.75, 0.85].map((x) => {
+        const i = (Math.floor(height / 4) * width + Math.floor(x * width)) * 3;
+        return { x, original: [...a.subarray(i, i + 3)], enhanced: [...b.subarray(i, i + 3)] };
+      });
+      const capture = await page.locator('#main').evaluate(async (video: HTMLVideoElement) => {
+        const frame = new VideoFrame(video);
+        try {
+          const pixels = new Uint8Array(frame.displayWidth * frame.displayHeight * 4);
+          await frame.copyTo(pixels, { format: 'RGBA', colorSpace: 'srgb' });
+          const canvas = document.createElement('canvas');
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(video, 0, 0);
+          return {
+            format: frame.format,
+            color: frame.colorSpace.toJSON(),
+            samples: [0.15, 0.25, 0.35, 0.5, 0.65, 0.75, 0.85].map((x) => {
+              const px = Math.floor(x * frame.displayWidth),
+                py = Math.floor(frame.displayHeight / 4);
+              const i = (py * frame.displayWidth + px) * 4;
+              return {
+                x,
+                copy: [...pixels.subarray(i, i + 3)],
+                canvas: [...ctx.getImageData(px, py, 1, 1).data].slice(0, 3),
+              };
+            }),
+          };
+        } finally {
+          frame.close();
+        }
+      });
+      const maxError = Math.max(
+        ...samples.flatMap((s) => s.original.map((v, i) => Math.abs(v - s.enhanced[i]))),
+      );
+      fs.writeFileSync('test-results/color-original.png', original);
+      fs.writeFileSync('test-results/color-enhanced.png', enhanced);
+      fs.writeFileSync(
+        'test-results/color-metrics.json',
+        JSON.stringify(
+          {
+            browser: await context.browser()!.version(),
+            source: 'SMPTE HD SDR Rec.709',
+            fixture: `${fixtureSize} ${fixtureFps}fps VP9/Opus`,
+            target,
+            browserFlags: extraBrowserArgs,
+            capture,
+            samples,
+            maxError,
+          },
+          null,
+          2,
+        ),
+      );
+      console.log('Color round trip:', JSON.stringify({ samples, maxError, capture }));
+      assert.ok(maxError <= 8, `Color-managed flat patches shifted by ${maxError}/255`);
+    }
+    await overlay.evaluate((element) => {
+      const changes: { at: number; visible: boolean }[] = [];
+      (window as unknown as { vsrTransition: typeof changes }).vsrTransition = changes;
+      const until = performance.now() + 600;
+      function inspect() {
+        changes.push({
+          at: performance.now(),
+          visible: element.isConnected && getComputedStyle(element).opacity === '1',
+        });
+        if (performance.now() < until) requestAnimationFrame(inspect);
+      }
+      inspect();
+    });
     await page.click('#play');
     await waitState((v) => v?.state === 'active');
+    await page.waitForTimeout(650);
+    assert.equal(
+      await overlay.evaluate((e) => e.isConnected),
+      true,
+      'Quick resume must reuse the same iframe/decoder',
+    );
+    const transition = await page.evaluate(
+      () =>
+        (window as unknown as { vsrTransition: { at: number; visible: boolean }[] }).vsrTransition,
+    );
+    console.log(
+      'Resume visibility:',
+      JSON.stringify({
+        samples: transition.length,
+        hidden: transition.filter((sample) => !sample.visible),
+      }),
+    );
+    assert.ok(
+      transition.every((sample) => sample.visible),
+      'Quick resume must never hide or replace the painted overlay',
+    );
+    // Longer pauses release the stream lease but retain one frozen picture;
+    // a later session must retire it after its first actual presentation.
+    await page.click('#play');
+    await waitState((v) => v?.state === 'paused');
+    await page.waitForTimeout(5700);
+    const paused = {
+      state: await state(),
+      overlays: await page.locator('.player iframe').evaluateAll((elements) =>
+        elements.map((e) => ({
+          connected: e.isConnected,
+          opacity: getComputedStyle(e).opacity,
+        })),
+      ),
+      status: JSON.parse(cli('status')),
+    };
+    console.log('Long pause:', JSON.stringify(paused));
+    assert.equal(
+      await overlay.evaluate((e) => e.isConnected && getComputedStyle(e).opacity === '1'),
+      true,
+    );
+    assert.equal(
+      JSON.parse(cli('status')).streaming,
+      false,
+      'A longer pause must release the native stream lease',
+    );
+    assert.equal(paused.status.gpu_loaded, false, 'Long pause must allow GPU idle cleanup');
+    await page.click('#play');
+    await waitState((v) => v?.state === 'active');
+    assert.equal(await overlay.evaluate((e) => e.isConnected), false);
+    assert.equal(await page.locator('.player iframe').count(), 1);
+    fs.writeFileSync(
+      'test-results/pause-metrics.json',
+      JSON.stringify(
+        {
+          browser: await context.browser()!.version(),
+          fixture: `${fixtureSize} ${fixtureFps}fps VP9/Opus`,
+          target,
+          quick: transition,
+          paused,
+        },
+        null,
+        2,
+      ),
+    );
     await page.click('#seek');
     await waitState((v) => v?.state === 'active');
     await page.click('#replace');

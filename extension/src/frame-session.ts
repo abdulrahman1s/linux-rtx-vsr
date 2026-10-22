@@ -119,7 +119,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       meta.round_trip_ms = receivedAt - capture.sentAt;
       meta.capture_ms = capture.captureMs;
       meta.capture_handoff_ms = capture.handoffMs;
-      if (stopped || meta.epoch !== epoch) {
+      if (stopped || meta.epoch !== epoch || clock?.rate === 0) {
         bitmap.close();
         return;
       }
@@ -157,6 +157,13 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     const value = event.data;
     if (value.type === 'clock') {
       clock = value;
+      if (value.rate === 0) {
+        // Hold the last canvas picture. Still decode pending predictive
+        // packets, but discard their surfaces and never call it active.
+        flush();
+        lastPresented = 0;
+        lastReport = -Infinity;
+      }
       if (epoch !== value.epoch) {
         epoch = value.epoch;
         flush();
@@ -206,7 +213,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     cancelTick();
     const time = now();
     lastTick = time;
-    if (clock && time - clock.at < 500) {
+    if (clock && clock.rate > 0 && time - clock.at < 500) {
       const audible = clock.media + ((time - clock.at) * clock.rate) / 1000;
       // Keep future frames; discard old pictures instead of accumulating delay.
       let selected = null;

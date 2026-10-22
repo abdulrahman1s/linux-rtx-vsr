@@ -173,6 +173,12 @@ export class VsrAudioSync {
         video.playbackRate
     );
   }
+  pause() {
+    // A pause is not processing latency. Keep a calibrated graph untouched,
+    // but never combine pre-pause startup samples with resumed playback.
+    this.samples = [];
+    this.sampledAt = null;
+  }
   bypass() {
     this.generation++;
     if (this.graph && this.active) {

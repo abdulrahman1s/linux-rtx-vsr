@@ -80,6 +80,7 @@ unsafe extern "C" {
         height: u32,
         pitch: u32,
         qp: u32,
+        srgb: i32,
         error: *mut c_char,
         capacity: usize,
     ) -> Ptr;
@@ -261,7 +262,12 @@ impl Engine {
                     alloc(w, h, 10, 1, 7, 1, 0, &mut self.encoded),
                     "Allocating NVENC NV12 surface",
                 )?;
-                (*self.encoded).color = 1; // BT.709, limited range, cosited NV12.
+                // Use an explicitly signalled Rec.601 YUV matrix with Rec.709
+                // primaries. NVIDIA's browser BGRX export path can otherwise
+                // apply Rec.601 to Rec.709 YUV even with correct frame metadata.
+                // Changing BOTH the actual matrix and its label preserves RGB;
+                // this is not a gamut/gamma conversion or an RGB correction.
+                (*self.encoded).color = 0; // Rec.601 matrix, limited, cosited.
                 let mut error = [0 as c_char; 1024];
                 self.encoder = vsr_encoder_create(
                     self.nvenc.create,
@@ -271,6 +277,7 @@ impl Engine {
                     h,
                     (*self.encoded).pitch as u32,
                     self.config.encode_qp,
+                    i32::from(frame.format == 0),
                     error.as_mut_ptr(),
                     error.len(),
                 );
@@ -349,7 +356,7 @@ impl Engine {
             let encode = Instant::now();
             check(
                 transfer(self.output, self.encoded, 1., null_mut(), null_mut()),
-                "Converting enhanced output to BT.709 NV12",
+                "Converting enhanced output to NV12",
             )?;
             check((self.cuda.sync)(), "NVENC producer synchronization")?;
             let mut error = [0 as c_char; 1024];
@@ -395,7 +402,7 @@ impl Engine {
             let encode_ms = encode.elapsed().as_secs_f64() * 1000.;
             Ok((
                 bytes,
-                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"keyframe":keyframe,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
+                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"color_space":if frame.format == 0 { "srgb" } else { "bt709" },"keyframe":keyframe,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
             ))
         }
     }
@@ -427,6 +434,111 @@ impl Drop for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "Requires NVIDIA VFX, AV1 NVENC and ffmpeg/ffprobe"]
+    fn nvidia_color_round_trip() {
+        let config = crate::config::Paths::discover().unwrap().load().unwrap();
+        let (w, h) = (640u32, 360u32);
+        let mut engine = Engine::new(&config).unwrap();
+        std::fs::create_dir_all("test-results").unwrap();
+        let source = [187u8, 216, 12];
+        for format in 0u32..=3 {
+            let pixels = (w * h) as usize;
+            let mut bytes = vec![
+                0u8;
+                HEADER
+                    + if format == 0 {
+                        pixels * 4
+                    } else {
+                        pixels * 3 / 2
+                    }
+            ];
+            bytes[..4].copy_from_slice(b"RVS1");
+            bytes[4..8].copy_from_slice(&w.to_le_bytes());
+            bytes[8..12].copy_from_slice(&h.to_le_bytes());
+            bytes[12..16].copy_from_slice(&format.to_le_bytes());
+            if format == 0 {
+                for pixel in bytes[HEADER..].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&[source[0], source[1], source[2], 255]);
+                }
+            } else {
+                // Independent reference generation belongs only in this test.
+                let (kr, kb) = if format == 2 {
+                    (0.299, 0.114)
+                } else {
+                    (0.2126, 0.0722)
+                };
+                let [r, g, b] = source.map(f64::from);
+                let y = kr * r + (1. - kr - kb) * g + kb * b;
+                let (offset, luma, chroma) = if format == 3 {
+                    (0., 255., 255.)
+                } else {
+                    (16., 219., 224.)
+                };
+                bytes[HEADER..HEADER + pixels].fill((offset + luma * y / 255.).round() as u8);
+                for uv in bytes[HEADER + pixels..].chunks_exact_mut(2) {
+                    uv[0] = (128. + chroma * (b - y) / (2. * (1. - kb) * 255.)).round() as u8;
+                    uv[1] = (128. + chroma * (r - y) / (2. * (1. - kr) * 255.)).round() as u8;
+                }
+            }
+            let (packet, _) = engine.process(&bytes, 3, 2., true).unwrap();
+            let path = format!("test-results/color-{format}.obu");
+            std::fs::write(&path, packet).unwrap();
+            let decoded = std::process::Command::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-i",
+                    &path,
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "pipe:1",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                decoded.status.success(),
+                "{}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+            assert_eq!(decoded.stdout.len(), 1280 * 720 * 3);
+            let center = (360 * 1280 + 640) * 3;
+            let rgb = &decoded.stdout[center..center + 3];
+            for (actual, expected) in rgb.iter().zip(source) {
+                assert!(
+                    actual.abs_diff(expected) <= 5,
+                    "format {format}: {rgb:?} vs {source:?}"
+                );
+            }
+            let probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=color_range,color_space,color_transfer,color_primaries",
+                    "-of",
+                    "json",
+                    &path,
+                ])
+                .output()
+                .unwrap();
+            assert!(probe.status.success());
+            let info: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+            let color = &info["streams"][0];
+            assert_eq!(color["color_space"], "smpte170m");
+            assert_eq!(color["color_primaries"], "bt709");
+            assert_eq!(color["color_range"], "tv");
+            assert_eq!(
+                color["color_transfer"],
+                if format == 0 { "iec61966-2-1" } else { "bt709" }
+            );
+            eprintln!("Color format {format}: {rgb:?}, {color}");
+        }
+    }
     #[test]
     #[ignore = "Requires a compatible NVIDIA GPU, driver, VFX 1.3 and AV1 NVENC"]
     fn nvidia_nv12_inference() {

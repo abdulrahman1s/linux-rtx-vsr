@@ -41,7 +41,7 @@ void vsr_encoder_destroy(VsrEncoder *s) {
 
 VsrEncoder *vsr_encoder_create(CreateInstance create, void *context, void *pixels,
                               uint32_t width, uint32_t height, uint32_t pitch,
-                              uint32_t qp, char *error, size_t capacity) {
+                              uint32_t qp, int srgb, char *error, size_t capacity) {
   VsrEncoder *s = calloc(1, sizeof(*s));
   if (!s) { snprintf(error, capacity, "Cannot allocate NVENC session"); return NULL; }
   s->width = width; s->height = height; s->pitch = pitch;
@@ -88,9 +88,13 @@ VsrEncoder *vsr_encoder_create(CreateInstance create, void *context, void *pixel
   a->inputBitDepth = NV_ENC_BIT_DEPTH_8;
   a->outputBitDepth = NV_ENC_BIT_DEPTH_8;
   a->colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-  a->transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-  a->matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+  // NvCVImage's RGB -> YUV conversion changes matrix/range, not gamma.
+  // Browser RGBA staging is explicitly sRGB; native NV12 remains Rec.709.
+  a->transferCharacteristics = srgb ? NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB
+                                    : NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+  a->matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS_SMPTE170M;
   a->colorRange = 0;
+  a->chromaSamplePosition = 1;
   NV_ENC_INITIALIZE_PARAMS init = {0};
   init.version = NV_ENC_INITIALIZE_PARAMS_VER;
   init.encodeGUID = NV_ENC_CODEC_AV1_GUID;

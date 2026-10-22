@@ -1,0 +1,738 @@
+{
+  "date": "2026-10-23",
+  "revision": "Working tree based on b881d48c7da249bb10ddb2a6e89ef68d20666948, color/pause fix",
+  "hardware": "NVIDIA GeForce RTX 5090, 595.104.02",
+  "notes": [
+    "Headed disposable Brave profile, Bun 1.3.13, NV12 capture, High quality 3, QP 14, 1080p30 to 4K.",
+    "Color samples use CSS-scaled screenshots with actual PNG dimensions, avoiding HiDPI coordinate errors.",
+    "Quick resume checks visibility/identity at animation ticks; this is not physical display or audible lip-sync measurement.",
+    "The long-pause observation follows 5.7 seconds without capture; the native stream and GPU child were released.",
+    "No sustained FPS/performance claim is made."
+  ],
+  "color": {
+    "browser": "155.0.8059.85",
+    "source": "SMPTE HD SDR Rec.709",
+    "fixture": "1920x1080 30fps VP9/Opus",
+    "target": 2160,
+    "browserFlags": [
+      "--enable-features=VaapiVideoDecoder,AcceleratedVideoDecodeLinuxGL,VaapiOnNvidiaGPUs",
+      "--use-gl=angle",
+      "--use-angle=gl",
+      "--disable-features=UseChromeOSDirectVideoDecoder,Vulkan",
+      "--ignore-gpu-blocklist"
+    ],
+    "capture": {
+      "format": "NV12",
+      "color": {
+        "fullRange": false,
+        "matrix": "bt709",
+        "primaries": "bt709",
+        "transfer": "bt709"
+      },
+      "samples": [
+        {
+          "x": 0.15,
+          "copy": [
+            188,
+            191,
+            190
+          ],
+          "canvas": [
+            189,
+            191,
+            191
+          ]
+        },
+        {
+          "x": 0.25,
+          "copy": [
+            187,
+            216,
+            12
+          ],
+          "canvas": [
+            187,
+            217,
+            13
+          ]
+        },
+        {
+          "x": 0.35,
+          "copy": [
+            31,
+            232,
+            185
+          ],
+          "canvas": [
+            30,
+            233,
+            185
+          ]
+        },
+        {
+          "x": 0.5,
+          "copy": [
+            29,
+            255,
+            11
+          ],
+          "canvas": [
+            29,
+            255,
+            11
+          ]
+        },
+        {
+          "x": 0.65,
+          "copy": [
+            160,
+            0,
+            177
+          ],
+          "canvas": [
+            160,
+            1,
+            176
+          ]
+        },
+        {
+          "x": 0.75,
+          "copy": [
+            157,
+            0,
+            0
+          ],
+          "canvas": [
+            156,
+            1,
+            0
+          ]
+        },
+        {
+          "x": 0.85,
+          "copy": [
+            0,
+            0,
+            172
+          ],
+          "canvas": [
+            1,
+            0,
+            173
+          ]
+        }
+      ]
+    },
+    "samples": [
+      {
+        "x": 0.15,
+        "original": [
+          188,
+          191,
+          190
+        ],
+        "enhanced": [
+          188,
+          192,
+          189
+        ]
+      },
+      {
+        "x": 0.25,
+        "original": [
+          187,
+          216,
+          12
+        ],
+        "enhanced": [
+          187,
+          216,
+          10
+        ]
+      },
+      {
+        "x": 0.35,
+        "original": [
+          31,
+          232,
+          185
+        ],
+        "enhanced": [
+          28,
+          232,
+          183
+        ]
+      },
+      {
+        "x": 0.5,
+        "original": [
+          29,
+          255,
+          11
+        ],
+        "enhanced": [
+          26,
+          254,
+          11
+        ]
+      },
+      {
+        "x": 0.65,
+        "original": [
+          160,
+          0,
+          177
+        ],
+        "enhanced": [
+          159,
+          1,
+          172
+        ]
+      },
+      {
+        "x": 0.75,
+        "original": [
+          157,
+          0,
+          0
+        ],
+        "enhanced": [
+          156,
+          1,
+          1
+        ]
+      },
+      {
+        "x": 0.85,
+        "original": [
+          0,
+          0,
+          172
+        ],
+        "enhanced": [
+          1,
+          0,
+          169
+        ]
+      }
+    ],
+    "maxError": 5
+  },
+  "pause": {
+    "browser": "155.0.8059.85",
+    "fixture": "1920x1080 30fps VP9/Opus",
+    "target": 2160,
+    "quick": [
+      {
+        "at": 3591.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3591.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3595.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3600,
+        "visible": true
+      },
+      {
+        "at": 3604.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3608.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3623.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3624,
+        "visible": true
+      },
+      {
+        "at": 3626.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3630.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3634.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3639.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3643.10000000149,
+        "visible": true
+      },
+      {
+        "at": 3658,
+        "visible": true
+      },
+      {
+        "at": 3658.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3658.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3662.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3666.60000000149,
+        "visible": true
+      },
+      {
+        "at": 3670.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3674.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3691.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3691.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3692.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3696.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3700.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3706.60000000149,
+        "visible": true
+      },
+      {
+        "at": 3709.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3725.60000000149,
+        "visible": true
+      },
+      {
+        "at": 3726,
+        "visible": true
+      },
+      {
+        "at": 3729.10000000149,
+        "visible": true
+      },
+      {
+        "at": 3733.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3737.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3742,
+        "visible": true
+      },
+      {
+        "at": 3757,
+        "visible": true
+      },
+      {
+        "at": 3757.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3759.10000000149,
+        "visible": true
+      },
+      {
+        "at": 3763.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3767.5,
+        "visible": true
+      },
+      {
+        "at": 3772.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3775.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3793.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3794,
+        "visible": true
+      },
+      {
+        "at": 3796.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3801.10000000149,
+        "visible": true
+      },
+      {
+        "at": 3805.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3809.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3822.60000000149,
+        "visible": true
+      },
+      {
+        "at": 3822.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3825.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3829.5,
+        "visible": true
+      },
+      {
+        "at": 3833.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3838.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3842,
+        "visible": true
+      },
+      {
+        "at": 3858,
+        "visible": true
+      },
+      {
+        "at": 3858.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3859.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3863.60000000149,
+        "visible": true
+      },
+      {
+        "at": 3867.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3871.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3876,
+        "visible": true
+      },
+      {
+        "at": 3892.5,
+        "visible": true
+      },
+      {
+        "at": 3892.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3896.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3900.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3904.5,
+        "visible": true
+      },
+      {
+        "at": 3909.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3924,
+        "visible": true
+      },
+      {
+        "at": 3924.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3926.10000000149,
+        "visible": true
+      },
+      {
+        "at": 3930.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3934.5,
+        "visible": true
+      },
+      {
+        "at": 3940.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3942.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 3958.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3958.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 3958.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 3962.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3967.10000000149,
+        "visible": true
+      },
+      {
+        "at": 3971.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3975.39999999851,
+        "visible": true
+      },
+      {
+        "at": 3989.89999999851,
+        "visible": true
+      },
+      {
+        "at": 3990,
+        "visible": true
+      },
+      {
+        "at": 3993.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 3997.2999999970198,
+        "visible": true
+      },
+      {
+        "at": 4001.5,
+        "visible": true
+      },
+      {
+        "at": 4006,
+        "visible": true
+      },
+      {
+        "at": 4009.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 4025.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 4026,
+        "visible": true
+      },
+      {
+        "at": 4029.5,
+        "visible": true
+      },
+      {
+        "at": 4033.7000000029802,
+        "visible": true
+      },
+      {
+        "at": 4037.89999999851,
+        "visible": true
+      },
+      {
+        "at": 4042.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 4056.60000000149,
+        "visible": true
+      },
+      {
+        "at": 4056.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 4059.7999999970198,
+        "visible": true
+      },
+      {
+        "at": 4063.89999999851,
+        "visible": true
+      },
+      {
+        "at": 4068.10000000149,
+        "visible": true
+      },
+      {
+        "at": 4072.89999999851,
+        "visible": true
+      },
+      {
+        "at": 4076.5,
+        "visible": true
+      },
+      {
+        "at": 4091.10000000149,
+        "visible": true
+      },
+      {
+        "at": 4091.2000000029802,
+        "visible": true
+      },
+      {
+        "at": 4092.60000000149,
+        "visible": true
+      },
+      {
+        "at": 4096.70000000298,
+        "visible": true
+      },
+      {
+        "at": 4100.89999999851,
+        "visible": true
+      },
+      {
+        "at": 4107,
+        "visible": true
+      },
+      {
+        "at": 4109.20000000298,
+        "visible": true
+      },
+      {
+        "at": 4123.79999999702,
+        "visible": true
+      },
+      {
+        "at": 4124,
+        "visible": true
+      },
+      {
+        "at": 4126.5,
+        "visible": true
+      },
+      {
+        "at": 4130.60000000149,
+        "visible": true
+      },
+      {
+        "at": 4134.89999999851,
+        "visible": true
+      },
+      {
+        "at": 4140,
+        "visible": true
+      },
+      {
+        "at": 4143.10000000149,
+        "visible": true
+      },
+      {
+        "at": 4160.20000000298,
+        "visible": true
+      },
+      {
+        "at": 4160.39999999851,
+        "visible": true
+      },
+      {
+        "at": 4162.89999999851,
+        "visible": true
+      },
+      {
+        "at": 4167,
+        "visible": true
+      },
+      {
+        "at": 4171.20000000298,
+        "visible": true
+      },
+      {
+        "at": 4175.39999999851,
+        "visible": true
+      },
+      {
+        "at": 4190.79999999702,
+        "visible": true
+      },
+      {
+        "at": 4191,
+        "visible": true
+      },
+      {
+        "at": 4192.79999999702,
+        "visible": true
+      }
+    ],
+    "paused": {
+      "state": {
+        "message": "Playback paused; holding the enhanced picture",
+        "state": "paused"
+      },
+      "overlays": [
+        {
+          "connected": true,
+          "opacity": "1"
+        }
+      ],
+      "status": {
+        "gpu_loaded": false,
+        "pid": 3337954,
+        "running": true,
+        "streaming": false
+      }
+    }
+  }
+}

@@ -116,6 +116,41 @@ test('old JPEG protocol cannot become ready or active', async () => {
   assert.ok(f.messages.some((m) => m.type === 'error' && /update/.test(m.message)));
   assert.ok(!f.messages.some((m) => m.type === 'ready' || m.type === 'presented'));
 });
+test('pause holds the canvas without stale reports, discards pending pictures, and resumes the same stream', async () => {
+  const f = fixture();
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
+  async function frame(sequence: number, timestamp: number) {
+    f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence, captureMs: 1, epoch: 0 });
+    await f.socket.onmessage({
+      data: JSON.stringify({
+        type: 'frame',
+        sequence,
+        epoch: 0,
+        timestamp,
+        width: 1280,
+        height: 720,
+      }),
+    });
+    await f.socket.onmessage({ data: new ArrayBuffer(4) });
+  }
+  f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 1 });
+  await frame(1, 1);
+  f.tick();
+  assert.equal(f.draws(), 1);
+  f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 0 });
+  await frame(2, 1.01);
+  f.advance(1700);
+  f.tick();
+  assert.equal(f.draws(), 1);
+  assert.equal(f.closed(), 2, 'Pending paused output must release its GPU surface');
+  assert.ok(!f.messages.some((m) => m.type === 'stale'));
+  f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1700, rate: 1 });
+  await frame(3, 1);
+  f.tick();
+  assert.equal(f.draws(), 2);
+  assert.equal(f.messages.filter((m) => m.type === 'presented').length, 2);
+  f.stop();
+});
 test('presentation reporting is coalesced without skipping draws or delaying recovery', async () => {
   const f = fixture();
   await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });

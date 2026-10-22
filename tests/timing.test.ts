@@ -96,6 +96,14 @@ test('audio calibrates inaudibly, bounds clock slew and fades to dry before rese
   audio.update(100);
   assert.equal(audio.stats().mode, 'synchronized');
   assert.ok(Math.abs(graph.delay.delayTime.value - 0.078) < 1e-6);
+  const calibrated = calls.length;
+  audio.pause();
+  assert.equal(
+    calls.length,
+    calibrated,
+    'Pause must hold the calibrated gain/delay without automation',
+  );
+  assert.equal(audio.stats().mode, 'synchronized');
   for (let n = 0; n < 30; n++) {
     time = 0.6 + n / 30;
     audio.update(300);
