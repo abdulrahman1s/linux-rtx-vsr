@@ -458,7 +458,7 @@ mod tests {
             bytes[8..12].copy_from_slice(&h.to_le_bytes());
             bytes[12..16].copy_from_slice(&format.to_le_bytes());
             if format == 0 {
-                for pixel in bytes[HEADER..].chunks_exact_mut(4) {
+                for pixel in bytes[HEADER..].as_chunks_mut::<4>().0 {
                     pixel.copy_from_slice(&[source[0], source[1], source[2], 255]);
                 }
             } else {
@@ -476,7 +476,7 @@ mod tests {
                     (16., 219., 224.)
                 };
                 bytes[HEADER..HEADER + pixels].fill((offset + luma * y / 255.).round() as u8);
-                for uv in bytes[HEADER + pixels..].chunks_exact_mut(2) {
+                for uv in bytes[HEADER + pixels..].as_chunks_mut::<2>().0 {
                     uv[0] = (128. + chroma * (b - y) / (2. * (1. - kb) * 255.)).round() as u8;
                     uv[1] = (128. + chroma * (r - y) / (2. * (1. - kr) * 255.)).round() as u8;
                 }
