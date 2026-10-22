@@ -47,6 +47,7 @@ Use a **disposable Chromium profile**; the test never attaches to a personal bro
 ```sh
 cargo build --locked
 bun install --frozen-lockfile --ignore-scripts
+sudo apt-get install --yes ffmpeg zip unzip  # Debian/Ubuntu; also installed explicitly in CI
 bun node_modules/playwright-core/cli.js install --with-deps chromium  # conventional Linux / CI
 bun run test:browser
 ```

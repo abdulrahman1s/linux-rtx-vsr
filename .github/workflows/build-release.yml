@@ -73,6 +73,10 @@ jobs:
       - run: cargo +stable test --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run format:check && bun run check && bun test
+      - name: Install browser fixture and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg zip unzip
       - run: bun node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Browser failure and recovery checks (no GPU)
         run: bun run test:browser
