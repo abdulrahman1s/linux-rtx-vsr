@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Linux RTX VSR",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minimum_chrome_version": "140",
   "description": "Local NVIDIA VideoSuperRes with per-site rules and synchronized playback.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAteWom9nmxc4KnCyL05HzU12Y5napkPqNvT80QInHWL9opOEkDK9/KMrkhY1WSA+wwt4Hd+aGHp9mVv9CcJZK1dZAlNrWVtRSuLA+Zfnr3JJItEZsmMKsspKl8pPIwTfrlpKO4zPlNOikoX2EOOuQcylZGcpDSkjlaa2AOvj4AH7fRoyasb5FG3rsAyhL1pRiejsKDWRDt+g7w5N6j6jljobdYQaL38vTvOpHIQCqX8bX5DsgobZBilXBMKioud06+mgHKTAMcLjaO2qskUCY71xeBijnUeD0lTI93N8dxN2vA5654n7sJjCVN62ZiEkSC37Z17CezyvTSo7OtaVRdQIDAQAB",
