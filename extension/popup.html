@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Linux RTX VSR</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon32.png" width="32" height="32" alt="" />
+      <div>
+        <h1>Linux RTX VSR</h1>
+        <p>Local video enhancement</p>
+      </div>
+      <label class="switch" title="Enable or disable enhancement everywhere"
+        ><input id="global" type="checkbox" aria-label="Global enhancement" /><span></span
+      ></label>
+    </header>
+    <main>
+      <section class="playback" aria-live="polite">
+        <div class="signal"><i id="lamp"></i><strong id="state">Ready</strong></div>
+        <p id="message">Reading playback state…</p>
+        <div class="resolution">
+          <span id="source">Original video</span><span id="output"></span>
+        </div>
+      </section>
+      <div class="metrics">
+        <div><span id="fps">—</span><small>Presented fps</small></div>
+        <div><span id="latency">—</span><small>Processing ms</small></div>
+        <div><span id="dropped">—</span><small>Dropped</small></div>
+      </div>
+      <button id="manual" class="primary">Enable for this tab</button>
+      <button id="follow" class="quiet" hidden>Follow site rule</button>
+      <div class="site">
+        <div>
+          <label for="automatic">Always enable on this site</label>
+          <p id="origin">Open a video page</p>
+        </div>
+        <input id="automatic" type="checkbox" aria-label="Automatically enable on this site" />
+      </div>
+      <div class="settings">
+        <label
+          >AI quality<select id="quality">
+            <option value="1">Low · faster</option>
+            <option value="2">Medium</option>
+            <option value="3">High</option>
+            <option value="4">Ultra · more detail</option>
+          </select></label
+        ><label
+          >Scale<select id="scale">
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select></label
+        >
+      </div>
+      <p id="error" class="error" role="alert" hidden></p>
+      <details>
+        <summary>Connection &amp; help</summary>
+        <p id="backend">Backend starts when a video needs it.</p>
+        <button id="check" class="quiet">Check backend</button>
+        <p>
+          If connection fails, run <code>linux-rtx-vsr doctor</code>. After an update, reload the
+          extension and refresh video tabs.
+        </p>
+        <p>
+          Protected video, HDR, and embedded players are unsupported. All processing stays on this
+          computer.
+        </p>
+      </details>
+    </main>
+    <footer><span id="version"></span><span>NVIDIA VideoSuperRes</span></footer>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

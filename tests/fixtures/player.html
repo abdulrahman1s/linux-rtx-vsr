@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><title>VSR playback fixture</title>
+  <style>
+    body {
+      font: 18px sans-serif;
+      background: #dee7f1;
+      color: #223447;
+      margin: 30px;
+    }
+    .player {
+      position: relative;
+      width: 640px;
+      height: 360px;
+      background: #000;
+    }
+    .branch {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+    }
+    .caption {
+      position: absolute;
+      bottom: 20px;
+      left: 100px;
+      z-index: 20;
+      background: #111;
+      color: white;
+      padding: 8px;
+    }
+    .controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 20;
+    }
+    button {
+      padding: 8px;
+    }
+    #other {
+      width: 120px;
+      height: 68px;
+    }
+  </style>
+  <h1>Playback and recovery fixture</h1>
+  <p>The caption and controls must stay above the enhanced picture.</p>
+  <div class="player">
+    <div class="branch"><video id="main" loop playsinline src="/fixture.webm"></video></div>
+    <span class="caption">Captions remain readable</span>
+    <div class="controls">
+      <button id="play">Play / pause</button><button id="fullscreen">Fullscreen</button>
+    </div>
+  </div>
+  <p>
+    <button id="replace">Replace video</button><button id="seek">Seek</button
+    ><button id="spa">SPA navigation</button>
+  </p>
+  <video id="other" muted loop src="/fixture.webm"></video>
+  <script src="/player.js"></script>
+</html>

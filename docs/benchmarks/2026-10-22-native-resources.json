@@ -1,0 +1,208 @@
+{
+  "command": [
+    "target/release/linux-rtx-vsr",
+    "benchmark",
+    "--frames",
+    "2000",
+    "--width",
+    "1920",
+    "--height",
+    "1080"
+  ],
+  "host": "Linux-7.2.8-cachyos-x86_64-with-glibc2.44",
+  "cpu": "AMD Ryzen 7 5700X3D 8-Core Processor",
+  "device_fields": [
+    "name",
+    "driver_version",
+    "gpu_percent",
+    "device_memory_mib",
+    "watts"
+  ],
+  "baseline_device": "NVIDIA GeForce RTX 5090, 595.104.02, 9, 3645, 61.21",
+  "elapsed_seconds": 5.964890933999413,
+  "clock_ticks_per_second": 100,
+  "max_sampled_rss_kib": 273984,
+  "native": {
+    "first_frame_ms": 262.934304,
+    "frames": 2000,
+    "jpeg_quality": 94,
+    "mean_output_bytes": 1032537,
+    "overall_fps": 343.1532374322066,
+    "quality": 3,
+    "runtime_load_ms": 151.514096,
+    "scale": 2.0,
+    "source": [
+      1920,
+      1080
+    ],
+    "transport": "direct Rust SDK benchmark; excludes browser capture, transport, presentation and audio",
+    "version": "0.1.0",
+    "warm_p50_ms": 2.559471,
+    "warm_p95_ms": 3.5078319999999996
+  },
+  "samples": [
+    {
+      "seconds": 0.0006142980000731768,
+      "rss_kib": 556,
+      "cpu_ticks": 0,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 7, 3645, 61.68"
+    },
+    {
+      "seconds": 0.2279529970001022,
+      "rss_kib": 215724,
+      "cpu_ticks": 20,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 7, 4216, 61.68"
+    },
+    {
+      "seconds": 0.4517621239992877,
+      "rss_kib": 273968,
+      "cpu_ticks": 42,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 7, 4798, 61.68"
+    },
+    {
+      "seconds": 0.6776982359988324,
+      "rss_kib": 273968,
+      "cpu_ticks": 64,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 56, 4798, 88.59"
+    },
+    {
+      "seconds": 0.9044535889988765,
+      "rss_kib": 273968,
+      "cpu_ticks": 87,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 56, 4798, 88.59"
+    },
+    {
+      "seconds": 1.1317154979988118,
+      "rss_kib": 273972,
+      "cpu_ticks": 110,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 239.31"
+    },
+    {
+      "seconds": 1.3579293729999335,
+      "rss_kib": 273972,
+      "cpu_ticks": 132,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 239.31"
+    },
+    {
+      "seconds": 1.5858991909990436,
+      "rss_kib": 273972,
+      "cpu_ticks": 155,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 95, 4798, 381.40"
+    },
+    {
+      "seconds": 1.8127251639998576,
+      "rss_kib": 273972,
+      "cpu_ticks": 178,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 95, 4798, 381.40"
+    },
+    {
+      "seconds": 2.0397412900001655,
+      "rss_kib": 273976,
+      "cpu_ticks": 201,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 386.27"
+    },
+    {
+      "seconds": 2.265842763999899,
+      "rss_kib": 273976,
+      "cpu_ticks": 224,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 386.27"
+    },
+    {
+      "seconds": 2.4944944990002114,
+      "rss_kib": 273976,
+      "cpu_ticks": 247,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 382.05"
+    },
+    {
+      "seconds": 2.721061700000064,
+      "rss_kib": 273976,
+      "cpu_ticks": 269,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 382.05"
+    },
+    {
+      "seconds": 2.947609728998941,
+      "rss_kib": 273976,
+      "cpu_ticks": 291,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 382.05"
+    },
+    {
+      "seconds": 3.173695243000111,
+      "rss_kib": 273976,
+      "cpu_ticks": 312,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 392.08"
+    },
+    {
+      "seconds": 3.4009171609995974,
+      "rss_kib": 273980,
+      "cpu_ticks": 335,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 392.08"
+    },
+    {
+      "seconds": 3.6284516630003054,
+      "rss_kib": 273980,
+      "cpu_ticks": 357,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 399.64"
+    },
+    {
+      "seconds": 3.8550800239991077,
+      "rss_kib": 273980,
+      "cpu_ticks": 379,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 399.64"
+    },
+    {
+      "seconds": 4.082104249000622,
+      "rss_kib": 273980,
+      "cpu_ticks": 401,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 400.88"
+    },
+    {
+      "seconds": 4.3081326030005584,
+      "rss_kib": 273980,
+      "cpu_ticks": 423,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 400.88"
+    },
+    {
+      "seconds": 4.535984407999422,
+      "rss_kib": 273984,
+      "cpu_ticks": 447,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 400.83"
+    },
+    {
+      "seconds": 4.762767140999131,
+      "rss_kib": 273984,
+      "cpu_ticks": 469,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 94, 4798, 400.83"
+    },
+    {
+      "seconds": 4.989667384999848,
+      "rss_kib": 273984,
+      "cpu_ticks": 491,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 400.86"
+    },
+    {
+      "seconds": 5.216896562000329,
+      "rss_kib": 273984,
+      "cpu_ticks": 513,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 400.86"
+    },
+    {
+      "seconds": 5.443406741998842,
+      "rss_kib": 273984,
+      "cpu_ticks": 535,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 400.86"
+    },
+    {
+      "seconds": 5.668893988000491,
+      "rss_kib": 273984,
+      "cpu_ticks": 557,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4798, 402.29"
+    },
+    {
+      "seconds": 5.896543660999669,
+      "rss_kib": 195860,
+      "cpu_ticks": 579,
+      "device": "NVIDIA GeForce RTX 5090, 595.104.02, 93, 4059, 402.29"
+    }
+  ],
+  "notes": "Device totals include other active desktop workloads. Sampling does not measure browser resources or audible A/V sync."
+}

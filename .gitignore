@@ -1,0 +1,8 @@
+/target/
+/result*
+/dist/
+/node_modules/
+/test-results/
+*.log
+__pycache__/
+/build/

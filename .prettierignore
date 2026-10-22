@@ -1,0 +1,12 @@
+bun.lock
+Cargo.lock
+flake.lock
+build/
+dist/
+target/
+node_modules/
+result*
+test-results/
+licenses/
+extension/licenses/
+docs/benchmarks/
