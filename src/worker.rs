@@ -65,12 +65,19 @@ impl GpuProcess {
             frame,
         })
     }
-    pub fn process(&mut self, bytes: &[u8], quality: u32, scale: f64) -> Result<(Vec<u8>, Value)> {
+    pub fn process(
+        &mut self,
+        bytes: &[u8],
+        quality: u32,
+        scale: f64,
+        reset: bool,
+    ) -> Result<(Vec<u8>, Value)> {
         let started = Instant::now();
         self.frame.write(bytes)?;
         let copy_ms = started.elapsed().as_secs_f64() * 1000.;
-        let meta =
-            serde_json::to_vec(&json!({"quality":quality,"scale":scale,"length":bytes.len()}))?;
+        let meta = serde_json::to_vec(
+            &json!({"quality":quality,"scale":scale,"length":bytes.len(),"reset":reset}),
+        )?;
         write_packet(&mut self.input, &meta)?;
         self.input.flush()?;
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -286,6 +293,7 @@ pub fn run(config: &Config, frame_fd: RawFd) -> Result<()> {
             let quality = meta["quality"].as_u64().context("Invalid quality")?;
             ensure!(quality <= 4, "Invalid quality");
             let scale = meta["scale"].as_f64().context("Invalid scale")?;
+            let reset = meta["reset"].as_bool().context("Invalid stream reset")?;
             crate::config::validate_settings(quality as u32, scale)?;
             crate::protocol::Frame::parse(bytes)?;
             if engine.is_none() {
@@ -294,7 +302,7 @@ pub fn run(config: &Config, frame_fd: RawFd) -> Result<()> {
             engine
                 .as_mut()
                 .unwrap()
-                .process(bytes, quality as u32, scale)
+                .process(bytes, quality as u32, scale, reset)
         })();
         let (bytes, meta) = match result {
             Ok(result) => result,

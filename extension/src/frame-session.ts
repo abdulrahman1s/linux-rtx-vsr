@@ -47,6 +47,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   let presented = 0,
     dropped = 0,
     lastPresented = 0,
+    lastReport = -Infinity,
     startupMs: number | null = null;
   const { now } = env;
   const inFlight = new Map<number, { sentAt: number; captureMs: number; handoffMs: number }>();
@@ -78,7 +79,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   port.start();
   ws = env.connect(`ws://127.0.0.1:${auth.port}/v1/stream`);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({ token: auth.token, quality, scale, protocol: 2 }));
+  ws.onopen = () => ws.send(JSON.stringify({ token: auth.token, quality, scale, protocol: 3 }));
   ws.onerror = () => fail('Cannot connect to the local engine. Run linux-rtx-vsr doctor.');
   ws.onclose = () => {
     if (!stopped)
@@ -89,7 +90,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       try {
         const value = JSON.parse(event.data);
         if (value.type === 'ready') {
-          if (value.protocol !== 2)
+          if (value.protocol !== 3)
             throw new Error(
               'Streaming protocol changed; update the native application and extension together',
             );
@@ -231,16 +232,23 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
           lastPresented = time;
           presented++;
           startupMs ??= time - started;
-          send({
-            type: 'presented',
-            epoch,
-            presented,
-            dropped,
-            fps: (presented * 1000) / (time - started),
-            latenessMs: lateness * 1000,
-            stats: meta,
-            startupMs,
-          });
+          // Draw every due picture; reporting at 10 Hz avoids a DOM/layout
+          // inspection and a cloned stats object on the page for every frame.
+          // First/recovered presentation and stale transitions stay immediate.
+          if (time - lastReport >= 100) {
+            lastReport = time;
+            send({
+              type: 'presented',
+              presentedAt: time,
+              epoch,
+              presented,
+              dropped,
+              fps: (presented * 1000) / (time - started),
+              latenessMs: lateness * 1000,
+              stats: meta,
+              startupMs,
+            });
+          }
         } else {
           dropped++;
         }
@@ -253,6 +261,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         message: 'Waiting for a fresh synchronized frame',
       });
       lastPresented = 0;
+      lastReport = -Infinity;
     }
     cancelTick = env.schedule(tick);
   }

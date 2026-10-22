@@ -67,6 +67,10 @@ test-gpu: build-rust
 benchmark-transport *args: release
     bun scripts/measure-transport.ts {{ args }}
 
+# Offline browser waveform continuity; no microphone or physical audio device.
+benchmark-audio *args:
+    bun scripts/measure-audio.ts {{ args }}
+
 check-nix:
     nix flake check --print-build-logs
 

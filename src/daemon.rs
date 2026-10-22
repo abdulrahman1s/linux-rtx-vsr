@@ -165,6 +165,7 @@ struct Job {
     bytes: Bytes,
     quality: u32,
     scale: f64,
+    reset: bool,
     reply: mpsc::SyncSender<Reply>,
 }
 pub fn run(paths: Paths, config: Config) -> Result<()> {
@@ -192,7 +193,10 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
         connections: AtomicUsize::new(0),
         loaded: AtomicBool::new(false),
     });
-    let (tx, rx) = mpsc::sync_channel::<Job>(0);
+    // One slot covers the reply-to-receive handoff: try_send on a rendezvous
+    // channel can report "busy" just after the worker has completed a reply.
+    // The sole stream still awaits each result before submitting another job.
+    let (tx, rx) = mpsc::sync_channel::<Job>(1);
     let gpu_shared = shared.clone();
     let gpu_config = config.clone();
     let worker = thread::spawn(move || {
@@ -205,10 +209,12 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
                             engine = Some(GpuProcess::spawn()?);
                             gpu_shared.loaded.store(true, Ordering::Relaxed);
                         }
-                        engine
-                            .as_mut()
-                            .unwrap()
-                            .process(&job.bytes, job.quality, job.scale)
+                        engine.as_mut().unwrap().process(
+                            &job.bytes,
+                            job.quality,
+                            job.scale,
+                            job.reset,
+                        )
                     })();
                     if result.is_err() {
                         engine = None;
@@ -306,7 +312,7 @@ fn control_client(mut socket: UnixStream, shared: &Shared, port: u16) -> Result<
             }
             Some("grant") => {
                 shared.touch();
-                Ok(json!({"token":shared.grant()?,"port":port,"protocol":2}))
+                Ok(json!({"token":shared.grant()?,"port":port,"protocol":3}))
             }
             _ => bail!("Unknown control operation"),
         }
@@ -354,7 +360,7 @@ fn stream(
     let auth = ws.read()?;
     ensure!(auth.len() <= 2048, "Authentication message too large");
     let auth: Value = serde_json::from_str(auth.to_text()?)?;
-    if auth["protocol"] != 2 {
+    if auth["protocol"] != 3 {
         ws.send(Message::text(json!({"type":"error","message":"AV1 streaming requires matching application and extension versions; reload both"}).to_string()))?;
         return Ok(());
     }
@@ -394,8 +400,11 @@ fn stream(
     let scale = auth["scale"].as_f64().context("Missing scale")?;
     crate::config::validate_settings(quality, scale)?;
     ws.send(Message::text(
-        json!({"type":"ready","protocol":2}).to_string(),
+        json!({"type":"ready","protocol":3}).to_string(),
     ))?;
+    // A decoder belongs to one connection, while the GPU process survives short
+    // pauses/seeks. Every new connection must start a fresh prediction chain.
+    let mut first_frame = true;
     while !shared.stop.load(Ordering::Relaxed) {
         match ws.read()? {
             Message::Binary(bytes) => {
@@ -410,6 +419,7 @@ fn stream(
                     bytes,
                     quality,
                     scale,
+                    reset: first_frame,
                     reply,
                 };
                 if tx.try_send(job).is_err() {
@@ -418,6 +428,7 @@ fn stream(
                 }
                 match rx.recv_timeout(Duration::from_secs(30))? {
                     Ok((bytes, mut stats)) => {
+                        first_frame = false;
                         stats["response_bytes"] = json!(bytes.len());
                         stats["received_wall_ms"] = json!(received_wall_ms);
                         stats["dispatch_ms"] = json!(dispatch_at.elapsed().as_secs_f64() * 1000.);

@@ -54,7 +54,7 @@ try {
   });
   const reply = JSON.parse(result.subarray(4, 4 + result.readUInt32LE()).toString());
   assert.equal(reply.token.length, 64);
-  assert.equal(reply.protocol, 2);
+  assert.equal(reply.protocol, 3);
   assert.equal(JSON.parse(cli('status')).running, true);
   assert.equal(JSON.parse(cli('status')).gpu_loaded, false);
   cli('config', 'set', 'quality', '4');

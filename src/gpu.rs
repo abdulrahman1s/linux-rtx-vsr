@@ -86,8 +86,10 @@ unsafe extern "C" {
     fn vsr_encoder_encode(
         encoder: Ptr,
         timestamp: u64,
+        force_keyframe: i32,
         bytes: *mut *const u8,
         length: *mut usize,
+        keyframe: *mut i32,
         error: *mut c_char,
         capacity: usize,
     ) -> i32;
@@ -132,6 +134,7 @@ pub struct Engine {
     encoded: *mut Image,
     encoder: Ptr,
     key: Option<(u32, u32, u32, u32, u32, u32)>,
+    codec: Option<String>,
     config: Config,
     // Preloaded feature libraries must outlive every SDK object.
     _preloads: Vec<Library>,
@@ -192,6 +195,7 @@ impl Engine {
                 encoded: null_mut(),
                 encoder: null_mut(),
                 key: None,
+                codec: None,
                 config: config.clone(),
                 _preloads: preloads,
             };
@@ -224,12 +228,14 @@ impl Engine {
             }
         }
         self.key = None;
+        self.codec = None;
     }
     pub fn process(
         &mut self,
         data: &[u8],
         quality: u32,
         scale: f64,
+        reset: bool,
     ) -> Result<(Vec<u8>, serde_json::Value)> {
         crate::config::validate_settings(quality, scale)?;
         let frame = Frame::parse(data)?;
@@ -349,12 +355,16 @@ impl Engine {
             let mut error = [0 as c_char; 1024];
             let mut packet = std::ptr::null();
             let mut length = 0;
+            let mut keyframe = 0;
+            let force_keyframe = reset || self.codec.is_none();
             ensure!(
                 vsr_encoder_encode(
                     self.encoder,
                     frame.sequence as u64,
+                    i32::from(force_keyframe),
                     &mut packet,
                     &mut length,
+                    &mut keyframe,
                     error.as_mut_ptr(),
                     error.len()
                 ) == 0,
@@ -370,11 +380,22 @@ impl Engine {
             let released = vsr_encoder_release(self.encoder, error.as_mut_ptr(), error.len());
             ensure!(valid, "NVENC returned an invalid encoded packet");
             ensure!(released == 0, "{}", encoder_error(&error));
-            let codec = crate::av1::codec_string(&bytes)?;
+            let keyframe = keyframe != 0;
+            ensure!(
+                !force_keyframe || keyframe,
+                "NVENC did not honor the stream restart keyframe"
+            );
+            if keyframe {
+                self.codec = Some(crate::av1::codec_string(&bytes)?);
+            }
+            let codec = self
+                .codec
+                .as_ref()
+                .context("NVENC stream started without a sequence header")?;
             let encode_ms = encode.elapsed().as_secs_f64() * 1000.;
             Ok((
                 bytes,
-                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"keyframe":true,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
+                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"keyframe":keyframe,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
             ))
         }
     }
@@ -424,7 +445,7 @@ mod tests {
         let mut engine = Engine::new(&config).unwrap();
         for format in 1u32..=3 {
             bytes[12..16].copy_from_slice(&format.to_le_bytes());
-            let (packet, stats) = engine.process(&bytes, 3, 2.).unwrap();
+            let (packet, stats) = engine.process(&bytes, 3, 2., true).unwrap();
             assert_eq!(stats["width"], 1280);
             assert_eq!(stats["height"], 720);
             assert!(packet.len() > 100);
@@ -432,5 +453,17 @@ mod tests {
             std::fs::create_dir_all("test-results").unwrap();
             std::fs::write(format!("test-results/nv12-{format}.obu"), packet).unwrap();
         }
+        // Same-sized restarts retain the CUDA/NVENC session but must still
+        // recover a fresh decoder. Concatenated output is decoded separately.
+        bytes[12..16].copy_from_slice(&1u32.to_le_bytes());
+        let mut stream = Vec::new();
+        for n in 0u32..6 {
+            bytes[16..20].copy_from_slice(&n.to_le_bytes());
+            let reset = n == 0 || n == 3;
+            let (packet, stats) = engine.process(&bytes, 3, 2., reset).unwrap();
+            assert_eq!(stats["keyframe"], reset);
+            stream.extend_from_slice(&packet);
+        }
+        std::fs::write("test-results/nv12-predictive.obu", stream).unwrap();
     }
 }

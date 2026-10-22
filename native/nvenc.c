@@ -73,7 +73,7 @@ VsrEncoder *vsr_encoder_create(CreateInstance create, void *context, void *pixel
       "Querying AV1 preset", error, capacity)) goto fail;
   NV_ENC_CONFIG *c = &preset.presetCfg;
   c->profileGUID = NV_ENC_AV1_PROFILE_MAIN_GUID;
-  c->gopLength = 1;
+  c->gopLength = 120;
   c->frameIntervalP = 1;
   c->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
   c->rcParams.constQP = (NV_ENC_QP){qp, qp, qp};
@@ -82,7 +82,7 @@ VsrEncoder *vsr_encoder_create(CreateInstance create, void *context, void *pixel
   c->rcParams.zeroReorderDelay = 1;
   c->rcParams.multiPass = NV_ENC_MULTI_PASS_DISABLED;
   NV_ENC_CONFIG_AV1 *a = &c->encodeCodecConfig.av1Config;
-  a->idrPeriod = 1;
+  a->idrPeriod = 120;
   a->repeatSeqHdr = 1;
   a->chromaFormatIDC = 1;
   a->inputBitDepth = NV_ENC_BIT_DEPTH_8;
@@ -123,9 +123,11 @@ fail:
 }
 
 // Returned bytes are valid until release or destroy. Each call is synchronous:
-// one input produces one independently decodable AV1 keyframe, or an error.
-int vsr_encoder_encode(VsrEncoder *s, uint64_t timestamp, const uint8_t **bytes,
-                       size_t *length, char *error, size_t capacity) {
+// one input produces one AV1 picture, or an error. No B frames or lookahead:
+// predictive coding saves bandwidth without waiting for future input pictures.
+int vsr_encoder_encode(VsrEncoder *s, uint64_t timestamp, int force_keyframe,
+                       const uint8_t **bytes, size_t *length, int *keyframe,
+                       char *error, size_t capacity) {
   NV_ENC_MAP_INPUT_RESOURCE map = {0};
   map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
   map.registeredResource = s->resource;
@@ -138,7 +140,8 @@ int vsr_encoder_encode(VsrEncoder *s, uint64_t timestamp, const uint8_t **bytes,
   pic.outputBitstream = s->bitstream;
   pic.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
   pic.inputTimeStamp = timestamp;
-  pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+  if (force_keyframe)
+    pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
   if (check(s, s->api.nvEncEncodePicture(s->encoder, &pic), "Encoding AV1 without buffering", error, capacity)) return -1;
   NV_ENC_LOCK_BITSTREAM lock = {0};
   lock.version = NV_ENC_LOCK_BITSTREAM_VER;
@@ -146,6 +149,7 @@ int vsr_encoder_encode(VsrEncoder *s, uint64_t timestamp, const uint8_t **bytes,
   if (check(s, s->api.nvEncLockBitstream(s->encoder, &lock), "Reading AV1 packet", error, capacity)) return -1;
   s->locked = 1;
   *bytes = lock.bitstreamBufferPtr; *length = lock.bitstreamSizeInBytes;
+  *keyframe = lock.pictureType == NV_ENC_PIC_TYPE_IDR || lock.pictureType == NV_ENC_PIC_TYPE_I;
   return 0;
 }
 

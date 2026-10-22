@@ -82,7 +82,7 @@ function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>) {
 test('session holds backpressure through metadata and reports active only after fresh drawing', async () => {
   const f = fixture();
   f.socket.onopen();
-  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
   assert.ok(!f.messages.some((m) => m.type === 'presented'));
   f.input({ type: 'clock', epoch: 1, media: 1, input: 1, at: 1000, rate: 1 });
   f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 1 });
@@ -116,9 +116,42 @@ test('old JPEG protocol cannot become ready or active', async () => {
   assert.ok(f.messages.some((m) => m.type === 'error' && /update/.test(m.message)));
   assert.ok(!f.messages.some((m) => m.type === 'ready' || m.type === 'presented'));
 });
+test('presentation reporting is coalesced without skipping draws or delaying recovery', async () => {
+  const f = fixture();
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
+  async function frame(sequence: number, time: number) {
+    f.advance(time);
+    f.input({ type: 'clock', epoch: 0, input: time / 1000, media: time / 1000, at: time, rate: 1 });
+    f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence, captureMs: 1, epoch: 0 });
+    await f.socket.onmessage({
+      data: JSON.stringify({
+        type: 'frame',
+        sequence,
+        epoch: 0,
+        timestamp: time / 1000,
+        width: 1280,
+        height: 720,
+      }),
+    });
+    await f.socket.onmessage({ data: new ArrayBuffer(4) });
+    f.tick();
+  }
+  for (let i = 0; i < 7; i++) await frame(i + 1, 1000 + i * 20);
+  assert.equal(f.draws(), 7);
+  assert.equal(f.messages.filter((m) => m.type === 'presented').length, 2);
+  f.advance(1350);
+  f.tick();
+  assert.equal(f.messages.at(-1)?.type, 'stale');
+  await frame(8, 1351);
+  const recovered = f.messages.filter((m) => m.type === 'presented').at(-1);
+  assert.ok(recovered?.type === 'presented');
+  assert.equal(recovered.presented, 8);
+  assert.equal(recovered.presentedAt, 1351);
+  f.stop();
+});
 test('session bounds overlapping requests and retains matching capture timings', async () => {
   const f = fixture();
-  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
   f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 1 });
   for (const sequence of [1, 2, 3, 4, 5])
     f.input({
@@ -160,7 +193,7 @@ test('input budget allows overlap at 1080p and bounds large raw pictures', () =>
 });
 test('live source clocks recover a suspended animation callback and cancellation stops it', async () => {
   const f = fixture();
-  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
   f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 0 });
   await f.socket.onmessage({
     data: JSON.stringify({
@@ -189,7 +222,7 @@ test('live source clocks recover a suspended animation callback and cancellation
 });
 test('out-of-order captures cannot hide a picture behind a future deadline', async () => {
   const f = fixture();
-  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
   f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 1 });
   for (const [sequence, timestamp] of [
     [1, 1.05],
@@ -226,7 +259,7 @@ test('seek discards decoded output from a previous epoch', async () => {
         resolve = r;
       }),
   );
-  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
   f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 0 });
   await f.socket.onmessage({
     data: JSON.stringify({ type: 'frame', sequence: 1, epoch: 0, timestamp: 1 }),
@@ -253,7 +286,7 @@ test('stop during AV1 decoding closes the result without presenting it', async (
         resolve = r;
       }),
   );
-  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
   f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 0 });
   await f.socket.onmessage({
     data: JSON.stringify({ type: 'frame', sequence: 1, epoch: 0, timestamp: 1 }),

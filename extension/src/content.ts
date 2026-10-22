@@ -212,12 +212,18 @@ interface Session {
           audio.bypass();
           state('bypassed', data.message);
         }
-        if (data.type === 'presented' && data.epoch === s.epoch && visible(v) && !reason(v)) {
+        if (
+          data.type === 'presented' &&
+          data.epoch === s.epoch &&
+          Date.now() - data.presentedAt <= 200 &&
+          visible(v) &&
+          !reason(v)
+        ) {
           iframe.style.opacity = '1';
-          s.lastPresented = Date.now();
+          s.lastPresented = data.presentedAt;
           state('active', 'Fresh enhanced frames are being presented', {
             epoch: s.epoch,
-            presentedAt: Date.now(),
+            presentedAt: data.presentedAt,
             source: `${data.stats.source_width} × ${data.stats.source_height}`,
             output: `${data.stats.width} × ${data.stats.height}`,
             fps: data.fps,

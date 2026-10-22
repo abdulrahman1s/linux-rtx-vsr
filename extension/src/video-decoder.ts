@@ -10,6 +10,7 @@ export function createPacketDecoder(): PacketDecoder {
   let decoder: VideoDecoder | undefined,
     key = '',
     sequence = 0,
+    needsKeyframe = true,
     closed = false;
   let configuring: Promise<void> | undefined;
   const pending = new Map<
@@ -23,9 +24,13 @@ export function createPacketDecoder(): PacketDecoder {
   return {
     async decode(data, meta) {
       if (closed) throw new Error('Video decoder is closed');
-      if (meta.format !== 'av1' || !/^av01\.0\.\d{2}[MH]\.08$/.test(meta.codec) || !meta.keyframe)
+      if (
+        meta.format !== 'av1' ||
+        !/^av01\.0\.\d{2}[MH]\.08$/.test(meta.codec) ||
+        typeof meta.keyframe !== 'boolean'
+      )
         throw new Error(
-          'Expected NVENC AV1 keyframes; update the application and extension together',
+          'Expected NVENC AV1 packets; update the application and extension together',
         );
       if (typeof VideoDecoder === 'undefined')
         throw new Error('This browser does not expose WebCodecs VideoDecoder');
@@ -63,16 +68,22 @@ export function createPacketDecoder(): PacketDecoder {
             },
           });
           decoder.configure(config);
+          needsKeyframe = true;
         })();
       }
       await configuring;
       if (closed) throw new Error('Video decoder is closed');
+      if (needsKeyframe && !meta.keyframe)
+        throw new Error('AV1 stream must start with a keyframe; enable enhancement again');
       if (pending.size >= MAX_IN_FLIGHT) throw new Error('AV1 decoder exceeded its bounded queue');
       const timestamp = ++sequence;
       return new Promise<VideoFrame>((resolve, reject) => {
         pending.set(timestamp, { resolve, reject });
         try {
-          decoder!.decode(new EncodedVideoChunk({ type: 'key', timestamp, data }));
+          decoder!.decode(
+            new EncodedVideoChunk({ type: meta.keyframe ? 'key' : 'delta', timestamp, data }),
+          );
+          needsKeyframe = false;
         } catch (error) {
           pending.delete(timestamp);
           reject(error);

@@ -13,13 +13,24 @@ const { values } = parseArgs({
     frames: { type: 'string', default: '180' },
     window: { type: 'string', default: '2' },
     'sdk-dir': { type: 'string' },
+    protocol: { type: 'string', default: '3' },
+    input: { type: 'string' },
+    'save-stream': { type: 'string' },
     output: { type: 'string', default: 'test-results/transport.json' },
   },
 });
 const frames = Number(values.frames),
-  window = Number(values.window);
+  window = Number(values.window),
+  protocol = Number(values.protocol);
 if (!Number.isInteger(frames) || frames < 40 || frames > 10000 || ![1, 2, 4].includes(window))
   throw new Error('Use --frames 40–10000 and --window 1, 2 or 4');
+if (![2, 3].includes(protocol)) throw new Error('Use --protocol 2 (baseline) or 3');
+const pixels = (1920 * 1080 * 3) / 2;
+const input = values.input ? Bun.file(values.input) : undefined;
+if (input && (!input.size || input.size > 512 * 1024 * 1024 || input.size % pixels !== 0))
+  throw new Error('Input must contain whole 1920x1080 NV12 frames, at most 512 MiB');
+const source = input ? new Uint8Array(await input.arrayBuffer()) : undefined;
+const stream = values['save-stream'] ? Bun.file(values['save-stream']).writer() : undefined;
 const root = mkdtempSync(path.join(tmpdir(), 'rtx-vsr-transport-'));
 const env = {
   ...process.env,
@@ -70,6 +81,10 @@ try {
       const sequence = ++sent;
       header.setUint32(16, sequence, true);
       header.setFloat64(24, sequence / 60, true);
+      if (source) {
+        const offset = ((sequence - 1) % (source.length / pixels)) * pixels;
+        frame.set(source.subarray(offset, offset + pixels), 32);
+      }
       pending.set(sequence, performance.now());
       socket!.send(frame);
     }
@@ -90,7 +105,7 @@ try {
     });
     socket.binaryType = 'arraybuffer';
     socket.onopen = () =>
-      socket!.send(JSON.stringify({ ...grant, quality: 3, scale: 2, protocol: 2 }));
+      socket!.send(JSON.stringify({ ...grant, quality: 3, scale: 2, protocol }));
     socket.onerror = () => finish(new Error('Transport socket failed'));
     socket.onclose = () => {
       if (completed !== frames) finish(new Error('Transport closed early'));
@@ -107,6 +122,7 @@ try {
         if (!meta || !pending.has(meta.sequence) || !event.data.byteLength)
           throw new Error('Missing real NVENC output');
         const at = performance.now();
+        stream?.write(event.data);
         samples.push({ at, round_trip_ms: at - pending.get(meta.sequence)!, stats: meta });
         pending.delete(meta.sequence);
         meta = undefined;
@@ -125,11 +141,15 @@ try {
     values.sort((a, b) => a - b)[Math.floor((values.length - 1) * q)];
   const result = {
     version: cli('--version').trim(),
-    source: '1920x1080 NV12 luma ramp',
+    source: values.input || '1920x1080 NV12 luma ramp',
+    source_sha256: source ? new Bun.CryptoHasher('sha256').update(source).digest('hex') : undefined,
     output: '3840x2160 AV1',
     quality: 3,
     window,
     frames,
+    protocol,
+    warm_mean_packet_bytes:
+      warm.reduce((sum, sample) => sum + (sample.stats.response_bytes || 0), 0) / warm.length,
     warm_fps: ((warm.length - 1) * 1000) / (last.at - first.at),
     warm_round_trip_p50_ms: quantile(
       warm.map((s) => s.round_trip_ms),
@@ -149,8 +169,12 @@ try {
 } finally {
   socket?.close();
   try {
-    cli('stop');
+    await stream?.end();
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    try {
+      cli('stop');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 }

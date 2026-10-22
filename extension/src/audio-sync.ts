@@ -1,11 +1,14 @@
 // Copyright (c) 2026 maxiarat1 and contributors
 // Adapted under the MIT license; see licenses/linux-nvidia-vsr-MIT.txt.
 // One graph per element: browsers do not allow detaching/recreating a
-// MediaElementAudioSourceNode. Bypass keeps the graph alive with zero delay.
+// MediaElementAudioSourceNode. Bypass fades to an undelayed path, rather than
+// sweeping a live delay buffer rapidly through unrelated audio samples.
 export interface AudioGraph {
   context: AudioContext;
   source: MediaElementAudioSourceNode;
   delay: DelayNode;
+  dry: GainNode;
+  wet: GainNode;
   video: HTMLVideoElement;
 }
 async function createBrowserGraph(video: HTMLVideoElement): Promise<AudioGraph> {
@@ -37,8 +40,12 @@ async function createBrowserGraph(video: HTMLVideoElement): Promise<AudioGraph> 
     }
     const source = context.createMediaElementSource(video);
     const delay = context.createDelay(1);
-    source.connect(delay).connect(context.destination);
-    return { context, source, delay, video };
+    const dry = context.createGain(),
+      wet = context.createGain();
+    wet.gain.value = 0;
+    source.connect(dry).connect(context.destination);
+    source.connect(delay).connect(wet).connect(context.destination);
+    return { context, source, delay, dry, wet, video };
   } catch (error) {
     await context.close();
     throw error;
@@ -52,6 +59,12 @@ export class VsrAudioSync {
   private latency: number | null;
   private latencySampledAt: number;
   private target = 0;
+  private active = false;
+  private bypassUntil = 0;
+  private sampledAt: number | null = null;
+  private adjustedAt = 0;
+  private generation = 0;
+  private mixes = new WeakMap<AudioGraph, { at: number; from: number; to: number }>();
   constructor(private readonly createGraph = createBrowserGraph) {
     this.graphs = new WeakMap();
     this.graph = null;
@@ -62,6 +75,7 @@ export class VsrAudioSync {
   }
   async attach(video: HTMLVideoElement) {
     this.bypass();
+    const generation = this.generation;
     let pending = this.graphs.get(video);
     if (!pending) {
       pending = this.createGraph(video);
@@ -69,13 +83,16 @@ export class VsrAudioSync {
       pending.catch(() => this.graphs.delete(video));
     }
     const graph = await pending;
+    if (generation !== this.generation) return;
     if (this.graph !== graph) {
       this.latencySamples = [];
       this.latency = null;
       this.latencySampledAt = -Infinity;
+      this.bypassUntil = 0;
     }
     this.graph = graph;
     this.samples = [];
+    this.sampledAt = null;
     await graph.context.resume();
     if (graph.context.state !== 'running') throw new Error('Audio needs a playback gesture.');
   }
@@ -91,16 +108,37 @@ export class VsrAudioSync {
     this.samples.push(Math.max(0, Math.min(500, mediaAgeMs)));
     if (this.samples.length > 45) this.samples.shift();
     const sorted = [...this.samples].sort((a, b) => a - b);
+    const now = g.context.currentTime;
+    this.sampledAt ??= now;
+    // Model/decoder startup and a single delayed callback must not retune
+    // audible audio. Calibrate with a short window while the dry path plays.
+    if (this.samples.length < 12 || now - this.sampledAt < 0.4 || now < this.bypassUntil) return;
     // The media element's clock is at the graph input. Account for the
     // graph/device output latency before adding any further audio delay.
     const target = Math.max(
       0,
       sorted[Math.floor(sorted.length * 0.9)] / 1000 + 0.008 - this.outputLatency(),
     );
-    // Smooth delay changes, rather than changing the audio clock per frame.
-    if (Math.abs(target - (this.target || 0)) > 0.002) {
+    if (!this.active) {
       this.target = target;
-      g.delay.delayTime.setTargetAtTime(target, g.context.currentTime, 0.08);
+      g.delay.delayTime.cancelScheduledValues(now);
+      g.delay.delayTime.setValueAtTime(target, now);
+      this.mix(true, now);
+      this.active = true;
+      this.adjustedAt = now;
+    } else if (now - this.adjustedAt >= 0.1 && Math.abs(target - this.target) > 0.008) {
+      // At most 0.5% clock slew, with an 8 ms deadband. The old 80 ms
+      // exponential adjustment could sweep hundreds of ms during startup.
+      const duration = Math.min(0.1, now - this.adjustedAt);
+      // The preceding <=100 ms ramp has completed before this update. Track
+      // its endpoint rather than reading a render-quantum-lagged AudioParam.
+      const current = this.target;
+      this.target =
+        current + Math.max(-duration * 0.005, Math.min(duration * 0.005, target - current));
+      g.delay.delayTime.cancelAndHoldAtTime(now);
+      g.delay.delayTime.setValueAtTime(current, now);
+      g.delay.delayTime.linearRampToValueAtTime(this.target, now + duration);
+      this.adjustedAt = now;
     }
   }
   outputLatency(): number {
@@ -131,24 +169,50 @@ export class VsrAudioSync {
   audibleTime(video: HTMLVideoElement, mediaTime = video.currentTime) {
     return (
       mediaTime -
-      (this.outputLatency() + (this.graph?.delay.delayTime.value || 0)) * video.playbackRate
+      (this.outputLatency() + (this.active ? this.graph?.delay.delayTime.value || 0 : 0)) *
+        video.playbackRate
     );
   }
   bypass() {
-    if (this.graph) {
+    this.generation++;
+    if (this.graph && this.active) {
       const { context, delay } = this.graph;
-      delay.delayTime.cancelScheduledValues(context.currentTime);
-      delay.delayTime.setTargetAtTime(0, context.currentTime, 0.005);
+      const now = context.currentTime;
+      this.mix(false, now);
+      // Keep the old read position during the fade; reset only when inaudible.
+      delay.delayTime.cancelAndHoldAtTime(now);
+      delay.delayTime.setValueAtTime(0, now + 0.02);
+      this.bypassUntil = now + 0.02;
     }
+    this.active = false;
     this.target = 0;
     this.samples = [];
+    this.sampledAt = null;
+  }
+  private mix(enhanced: boolean, now: number) {
+    const g = this.graph!;
+    const previous = this.mixes.get(g);
+    const progress = previous ? Math.max(0, Math.min(1, (now - previous.at) / 0.02)) : 1;
+    const wet = previous ? previous.from + (previous.to - previous.from) * progress : 0;
+    this.mixes.set(g, { at: now, from: wet, to: enhanced ? 1 : 0 });
+    for (const [param, value] of [
+      [g.dry.gain, enhanced ? 0 : 1],
+      [g.wet.gain, enhanced ? 1 : 0],
+    ] as const) {
+      param.cancelAndHoldAtTime(now);
+      // Explicit start anchors matter: with no prior event, a bare ramp can
+      // start at context time zero and make a supposedly muted delay audible.
+      param.setValueAtTime(param === g.wet.gain ? wet : 1 - wet, now);
+      param.linearRampToValueAtTime(value, now + 0.02);
+    }
   }
   stats() {
     const g = this.graph;
     return g
       ? {
           state: g.context.state,
-          delay_ms: g.delay.delayTime.value * 1000,
+          mode: this.active ? 'synchronized' : 'bypass',
+          delay_ms: this.active ? g.delay.delayTime.value * 1000 : 0,
           target_ms: (this.target || 0) * 1000,
           base_latency_ms: g.context.baseLatency * 1000,
           output_latency_ms: (g.context.outputLatency || 0) * 1000,

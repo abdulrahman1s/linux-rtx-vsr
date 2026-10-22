@@ -50,6 +50,7 @@ export interface FrameTimings {
   response_ms?: number;
   received_wall_ms?: number;
   completed_wall_ms?: number;
+  response_bytes?: number;
 }
 export interface Snapshot {
   settings: Settings;
@@ -108,7 +109,7 @@ export interface FrameMetadata extends FrameTimings {
   inference_ms: number;
   format: 'av1';
   codec: string;
-  keyframe: true;
+  keyframe: boolean;
 }
 export type CaptureMessage =
   | ClockMessage
@@ -128,6 +129,7 @@ export type FrameMessage =
   | { type: 'decoded'; ageMs: number }
   | {
       type: 'presented';
+      presentedAt: number;
       epoch: number;
       presented: number;
       dropped: number;

@@ -11,6 +11,7 @@ import path from 'node:path';
 import http from 'node:http';
 import assert from 'node:assert/strict';
 import { observeMedia } from './media-observer.ts';
+import { launchFixtureBrowser, type FixtureBrowser } from './browser-launch.ts';
 const gpu = process.env.VSR_GPU_TEST === '1';
 const extraBrowserArgs: unknown = JSON.parse(process.env.VSR_BROWSER_ARGS || '[]');
 if (!Array.isArray(extraBrowserArgs) || !extraBrowserArgs.every((arg) => typeof arg === 'string'))
@@ -61,8 +62,8 @@ const server = http.createServer((req, res) => {
   const file =
     route === '/fixture.webm'
       ? video
-      : route === '/player.js'
-        ? 'build/fixtures/player.js'
+      : route === '/player.js' || route === '/audio.js'
+        ? `build/fixtures${route}`
         : 'tests/fixtures/player.html';
   res.setHeader(
     'Content-Type',
@@ -92,13 +93,14 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 await Bun.build({
-  entrypoints: ['tests/fixtures/player.ts'],
+  entrypoints: ['tests/fixtures/player.ts', 'tests/fixtures/audio.ts'],
   outdir: 'build/fixtures',
   target: 'browser',
 });
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 let context: BrowserContext | undefined,
+  browser: FixtureBrowser | undefined,
   launchOptions: LaunchOptions,
   gpuWorkerPids: string[] = [];
 try {
@@ -129,7 +131,12 @@ try {
       ...extraBrowserArgs,
     ],
   };
-  context = await chromium.launchPersistentContext(`${root}/profile`, launchOptions);
+  browser = await launchFixtureBrowser(
+    `${root}/profile`,
+    launchOptions,
+    process.env.VSR_CDP === '1',
+  );
+  context = browser.context;
   const worker =
     context.serviceWorkers()[0] ||
     (await context.waitForEvent('serviceworker', { timeout: 15000 }));
@@ -226,11 +233,22 @@ try {
   await worker.evaluate(async (target) => {
     await chrome.storage.local.set({ settings: { enabled: true, sites: {}, quality: 3, target } });
   }, target);
-  const page = context.pages()[0];
+  // A branded browser's startup DevTools target may not be a registered tab.
+  // Create an owned tab explicitly instead of treating pages()[0] as one.
+  const page = await context.newPage();
+  await page.bringToFront();
   const media = gpu ? await observeMedia(context, page) : () => undefined;
   page.on('pageerror', (e) => console.log('Page error:', e.message));
   if (process.env.VSR_DEBUG) page.on('console', (m) => console.log('Browser:', m.text()));
   await page.goto(origin);
+  await page.addScriptTag({ url: `${origin}/audio.js`, type: 'module' });
+  const audioProbe = await page.evaluate(() => globalThis.vsrAudioProbe());
+  assert.ok(audioProbe.maximum_step < 0.03, `Audio discontinuity: ${JSON.stringify(audioProbe)}`);
+  assert.ok(
+    audioProbe.dry_error < 0.0001,
+    `Bypass must restore the undelayed waveform: ${JSON.stringify(audioProbe)}`,
+  );
+  console.log('Offline browser audio continuity:', JSON.stringify(audioProbe));
   await page.click('#play');
   const tabId = await worker.evaluate(
     async (url) => (await chrome.tabs.query({})).find((t) => t.url === url + '/')!.id!,
@@ -506,8 +524,13 @@ try {
   assert.ok(
     (await worker.evaluate(() => chrome.scripting.getRegisteredContentScripts())).length > 0,
   );
-  await context.close();
-  context = await chromium.launchPersistentContext(`${root}/profile`, launchOptions);
+  await browser.close();
+  browser = await launchFixtureBrowser(
+    `${root}/profile`,
+    launchOptions,
+    process.env.VSR_CDP === '1',
+  );
+  context = browser.context;
   const restarted =
     context.serviceWorkers()[0] ||
     (await context.waitForEvent('serviceworker', { timeout: 15000 }));
@@ -524,10 +547,13 @@ try {
     `${gpu ? 'GPU' : 'CPU'} browser checks passed (${await context.browser()!.version()}). Profile: ${root}`,
   );
 } finally {
-  await context?.close();
-  server.close();
   try {
-    cli('stop');
-  } catch {}
-  if (!process.env.VSR_KEEP_TEST_PROFILE) fs.rmSync(root, { recursive: true, force: true });
+    await browser?.close();
+  } finally {
+    server.close();
+    try {
+      cli('stop');
+    } catch {}
+    if (!process.env.VSR_KEEP_TEST_PROFILE) fs.rmSync(root, { recursive: true, force: true });
+  }
 }

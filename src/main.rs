@@ -514,7 +514,7 @@ fn benchmark(
         bytes[16..20].copy_from_slice(&n.to_le_bytes());
         bytes[24..32].copy_from_slice(&(n as f64 / 60.).to_le_bytes());
         let at = Instant::now();
-        let (b, _) = engine.process(&bytes, config.quality, scale)?;
+        let (b, _) = engine.process(&bytes, config.quality, scale, n == 0)?;
         let ms = at.elapsed().as_secs_f64() * 1000.;
         if n == 0 {
             first_ms = ms;

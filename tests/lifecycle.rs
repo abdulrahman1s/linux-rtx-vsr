@@ -59,14 +59,14 @@ fn backend_lifecycle_origin_security_and_idle_exit() {
     );
     let (mut ws, _) = tungstenite::connect(req.clone()).unwrap();
     ws.send(tungstenite::Message::text(
-        json!({"token":grant["token"],"quality":3,"scale":2,"protocol":2}).to_string(),
+        json!({"token":grant["token"],"quality":3,"scale":2,"protocol":3}).to_string(),
     ))
     .unwrap();
     assert!(ws.read().unwrap().to_text().unwrap().contains("ready"));
     let (mut replay, _) = tungstenite::connect(req.clone()).unwrap();
     replay
         .send(tungstenite::Message::text(
-            json!({"token":grant["token"],"quality":3,"scale":2,"protocol":2}).to_string(),
+            json!({"token":grant["token"],"quality":3,"scale":2,"protocol":3}).to_string(),
         ))
         .unwrap();
     assert!(replay.read().is_err());
@@ -78,7 +78,7 @@ fn backend_lifecycle_origin_security_and_idle_exit() {
     let (mut competing, _) = tungstenite::connect(req).unwrap();
     competing
         .send(tungstenite::Message::text(
-            json!({"token":grant["token"],"quality":3,"scale":2,"protocol":2}).to_string(),
+            json!({"token":grant["token"],"quality":3,"scale":2,"protocol":3}).to_string(),
         ))
         .unwrap();
     assert!(
