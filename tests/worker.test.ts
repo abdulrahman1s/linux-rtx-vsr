@@ -1,6 +1,7 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { startFrameSession } from '../extension/src/frame-session.ts';
+import { captureCapacity } from '../extension/src/frame-budget.ts';
 import type { FrameMessage, CaptureMessage } from '../extension/src/protocol.ts';
 function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>) {
   const messages: FrameMessage[] = [],
@@ -8,6 +9,7 @@ function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>) {
   let callback = () => {},
     time = 1000,
     draws = 0,
+    cancelled = 0,
     closed = 0;
   // Browser adapters exercise the public session interface without a VM or
   // access to private queues. Partial platform objects are confined here.
@@ -43,6 +45,9 @@ function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>) {
       now: () => time,
       schedule: (fn) => {
         callback = fn;
+        return () => {
+          cancelled++;
+        };
       },
       connect: () => socket as unknown as WebSocket,
       createDecoder: () => ({
@@ -71,6 +76,7 @@ function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>) {
     },
     draws: () => draws,
     closed: () => closed,
+    cancelled: () => cancelled,
   };
 }
 test('session holds backpressure through metadata and reports active only after fresh drawing', async () => {
@@ -114,7 +120,7 @@ test('session bounds overlapping requests and retains matching capture timings',
   const f = fixture();
   await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
   f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 1 });
-  for (const sequence of [1, 2, 3])
+  for (const sequence of [1, 2, 3, 4, 5])
     f.input({
       type: 'capture',
       buffer: new ArrayBuffer(48),
@@ -122,7 +128,12 @@ test('session bounds overlapping requests and retains matching capture timings',
       captureMs: sequence * 2,
       epoch: 0,
     });
-  assert.equal(f.sent.length, 2, 'A third raw frame must never queue on the socket');
+  assert.equal(f.sent.length, 4, 'A fifth raw frame must never queue on the socket');
+  assert.equal(
+    f.messages.filter((m) => m.type === 'recycle').length,
+    5,
+    'Rejected frames must also return their reusable storage',
+  );
   await f.socket.onmessage({
     data: JSON.stringify({
       type: 'frame',
@@ -138,8 +149,72 @@ test('session bounds overlapping requests and retains matching capture timings',
   const drawn = f.messages.find((m) => m.type === 'presented');
   assert.ok(drawn?.type === 'presented');
   assert.equal(drawn.stats.capture_ms, 2);
-  f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 4, captureMs: 8, epoch: 0 });
-  assert.equal(f.sent.length, 3, 'Decoded output must release exactly one slot');
+  f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 6, captureMs: 8, epoch: 0 });
+  assert.equal(f.sent.length, 5, 'Decoded output must release exactly one slot');
+  f.stop();
+});
+test('input budget allows overlap at 1080p and bounds large raw pictures', () => {
+  assert.equal(captureCapacity(32 + 1920 * 1080 * 4), 4);
+  assert.equal(captureCapacity(32 + 3840 * 2160 * 4), 1);
+  assert.equal(captureCapacity(32 + 7680 * 4320 * 1.5), 1);
+});
+test('live source clocks recover a suspended animation callback and cancellation stops it', async () => {
+  const f = fixture();
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 0 });
+  await f.socket.onmessage({
+    data: JSON.stringify({
+      type: 'frame',
+      sequence: 1,
+      epoch: 0,
+      timestamp: 1,
+      width: 1280,
+      height: 720,
+    }),
+  });
+  await f.socket.onmessage({ data: new ArrayBuffer(4) });
+  // Never execute the scheduled RAF: an unpainted iframe can suspend it.
+  f.advance(1150);
+  f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1150, rate: 1 });
+  assert.equal(f.draws(), 1);
+  assert.ok(f.messages.some((m) => m.type === 'presented'));
+  assert.ok(f.cancelled() > 0);
+  f.stop();
+  const cancelled = f.cancelled();
+  f.advance(1500);
+  f.input({ type: 'clock', epoch: 0, media: 2, input: 2, at: 1500, rate: 1 });
+  f.tick();
+  assert.equal(f.draws(), 1);
+  assert.equal(f.cancelled(), cancelled);
+});
+test('out-of-order captures cannot hide a picture behind a future deadline', async () => {
+  const f = fixture();
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 2 }) });
+  f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 1 });
+  for (const [sequence, timestamp] of [
+    [1, 1.05],
+    [2, 1],
+  ]) {
+    f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence, captureMs: 1, epoch: 0 });
+    await f.socket.onmessage({
+      data: JSON.stringify({
+        type: 'frame',
+        sequence,
+        epoch: 0,
+        timestamp,
+        width: 1280,
+        height: 720,
+      }),
+    });
+    await f.socket.onmessage({ data: new ArrayBuffer(4) });
+  }
+  f.tick();
+  const first = f.messages.find((m) => m.type === 'presented');
+  assert.ok(first?.type === 'presented');
+  assert.equal(first.stats.sequence, 2);
+  f.advance(1050);
+  f.tick();
+  assert.equal(f.draws(), 2);
   f.stop();
 });
 test('seek discards decoded output from a previous epoch', async () => {

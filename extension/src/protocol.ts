@@ -36,6 +36,9 @@ export interface PlaybackStatus {
 }
 export interface FrameTimings {
   capture_ms?: number;
+  capture_handoff_ms?: number;
+  shared_copy_ms?: number;
+  dispatch_ms?: number;
   round_trip_ms?: number;
   worker_round_trip_ms?: number;
   upload_ms?: number;
@@ -110,7 +113,14 @@ export interface FrameMetadata extends FrameTimings {
 export type CaptureMessage =
   | ClockMessage
   | { type: 'stop' }
-  | { type: 'capture'; epoch: number; sequence: number; captureMs: number; buffer: ArrayBuffer };
+  | {
+      type: 'capture';
+      epoch: number;
+      sequence: number;
+      captureMs: number;
+      copiedAt?: number;
+      buffer: ArrayBuffer;
+    };
 export type FrameMessage =
   | { type: 'ready' | 'available' }
   | { type: 'error' | 'stale'; message: string }

@@ -63,6 +63,10 @@ test-browser: build-rust
 test-gpu: build-rust
     VSR_GPU_TEST=1 bun run test:browser
 
+# Real NVIDIA transport throughput without browser capture/decode/presentation.
+benchmark-transport *args: release
+    bun scripts/measure-transport.ts {{ args }}
+
 check-nix:
     nix flake check --print-build-logs
 

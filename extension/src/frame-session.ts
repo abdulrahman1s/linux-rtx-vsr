@@ -1,4 +1,7 @@
+// Timing/recovery portions Copyright (c) 2026 maxiarat1 and contributors.
+// Adapted under MIT; see licenses/linux-nvidia-vsr-MIT.txt.
 import { errorMessage } from './errors.ts';
+import { captureCapacity } from './frame-budget.ts';
 import { createPacketDecoder, type PacketDecoder } from './video-decoder.ts';
 // NVENC AV1 decoding and presentation stay off the page's main thread.
 import type {
@@ -10,16 +13,20 @@ import type {
 } from './protocol.ts';
 export interface FrameEnvironment {
   now(): number;
-  schedule(callback: () => void): void;
+  schedule(callback: () => void): () => void;
   connect(url: string): WebSocket;
   createDecoder(): PacketDecoder;
 }
 const browser: FrameEnvironment = {
   now: () => performance.timeOrigin + performance.now(),
-  schedule: (callback) =>
-    typeof requestAnimationFrame === 'function'
-      ? void requestAnimationFrame(callback)
-      : void setTimeout(callback, 8),
+  schedule: (callback) => {
+    if (typeof requestAnimationFrame === 'function') {
+      const handle = requestAnimationFrame(callback);
+      return () => cancelAnimationFrame(handle);
+    }
+    const handle = setTimeout(callback, 8);
+    return () => clearTimeout(handle);
+  },
   connect: (url) => new WebSocket(url),
   createDecoder: createPacketDecoder,
 };
@@ -42,8 +49,10 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     lastPresented = 0,
     startupMs: number | null = null;
   const { now } = env;
-  const inFlight = new Map<number, { sentAt: number; captureMs: number }>();
+  const inFlight = new Map<number, { sentAt: number; captureMs: number; handoffMs: number }>();
   const started = now();
+  let lastTick = started,
+    cancelTick = () => {};
   function send(value: FrameMessage) {
     port?.postMessage(value);
   }
@@ -59,6 +68,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     if (stopped) return;
     stopped = true;
     ready = false;
+    cancelTick();
     flush();
     inFlight.clear();
     decoder.close();
@@ -107,6 +117,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       meta.decode_ms = now() - receivedAt;
       meta.round_trip_ms = receivedAt - capture.sentAt;
       meta.capture_ms = capture.captureMs;
+      meta.capture_handoff_ms = capture.handoffMs;
       if (stopped || meta.epoch !== epoch) {
         bitmap.close();
         return;
@@ -117,11 +128,14 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         1,
         Math.min(8, Math.floor((256 * 1024 * 1024) / (meta.width * meta.height * 1.5))),
       );
-      if (queue.length >= capacity) {
+      queue.push({ bitmap, meta, decodedAt: now() });
+      // Overlapping native staging/decode can complete out of media order.
+      // Keep the next audible deadline at the head, as in the upstream renderer.
+      queue.sort((a, b) => a.meta.timestamp - b.meta.timestamp);
+      if (queue.length > capacity) {
         queue.shift()!.bitmap.close();
         dropped++;
       }
-      queue.push({ bitmap, meta, decodedAt: now() });
       const mediaNow = clock
         ? clock.input + ((now() - clock.at) * clock.rate) / 1000
         : meta.timestamp;
@@ -146,6 +160,11 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         epoch = value.epoch;
         flush();
       }
+      // Adapted from maxiarat1/linux-nvidia-vsr's renderer (MIT). Chromium
+      // may suspend a pending worker RAF while the iframe is transparent.
+      // Live source clocks recover the lost tick without a permanent timer,
+      // and cancel the old callback so resumed RAF cannot fork the loop.
+      if (!stopped && now() - lastTick > 100) tick();
       return;
     }
     if (value.type === 'stop') {
@@ -153,13 +172,24 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       return;
     }
     if (value.type !== 'capture') return;
-    if (!ready || inFlight.size >= 2 || stopped || value.epoch !== epoch) {
+    if (
+      !ready ||
+      inFlight.size >= captureCapacity(value.buffer.byteLength) ||
+      stopped ||
+      value.epoch !== epoch
+    ) {
+      sendRecycle(value.buffer);
       send({ type: 'available' });
       return;
     }
     try {
       if (inFlight.has(value.sequence)) throw new Error('Duplicate captured sequence');
-      inFlight.set(value.sequence, { sentAt: now(), captureMs: value.captureMs });
+      const sentAt = now();
+      inFlight.set(value.sequence, {
+        sentAt,
+        captureMs: value.captureMs,
+        handoffMs: value.copiedAt === undefined ? 0 : Math.max(0, sentAt - value.copiedAt),
+      });
       ws.send(value.buffer);
       sendRecycle(value.buffer);
     } catch (error) {
@@ -172,7 +202,9 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   }
   function tick() {
     if (stopped) return;
+    cancelTick();
     const time = now();
+    lastTick = time;
     if (clock && time - clock.at < 500) {
       const audible = clock.media + ((time - clock.at) * clock.rate) / 1000;
       // Keep future frames; discard old pictures instead of accumulating delay.
@@ -222,6 +254,6 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       });
       lastPresented = 0;
     }
-    env.schedule(tick);
+    cancelTick = env.schedule(tick);
   }
 }

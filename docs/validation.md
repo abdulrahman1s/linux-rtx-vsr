@@ -119,3 +119,26 @@ The Rust backend now uses actual CUDA VideoSuperRes → GPU BT.709 NV12 → NVEN
 Stages overlap/nest and must not be added together. Request/response splits compare clocks on the same machine and are diagnostic estimates. The large request interval includes browser socket scheduling/copying, loopback transfer, time behind an earlier request, and native receive/unmask; those individual costs have **not** been isolated. Native inference is not the dominant measured interval. Restoring AV1 removes the JPEG stage but has not by itself solved the remaining raw-input throughput bottleneck.
 
 Hidden state was emulated where automation kept the page visible. Physical audible synchronization, physical display latency, long-run memory/CPU behavior, low-VRAM failure, other GPUs, natural-video quality, and sustained 8K performance remain unvalidated.
+
+## Shared-memory transport and capture overlap
+
+The optimization retains direct NVIDIA FFI in Rust and the supervised GPU process. Raw input now uses one reusable anonymous shared-memory slot instead of a cloned WebSocket payload, kernel pipe transfer and freshly allocated child buffer. The child reads the sealed-size mapping read-only; command/reply ordering prevents overwrite during GPU access. Capture reuses a bounded buffer pool and allows up to four outstanding frames, reduced for large inputs by a 32 MiB budget. Decoding uses the same maximum; presentation sorts overlapping completions by source timestamp. Live source clocks recover a worker RAF suspended by a transparent iframe, and stop cancels it.
+
+[Raw comparison and method](benchmarks/2026-10-22-shared-memory.json) preserve three short visible-window trials per version on RTX 5090 / 595.104.02 / NixOS, VFX 1.3, Brave Origin 1.97.59 / Chromium 155.0.8059.85. Both versions used the identical 24-second 1080p60 VP9/Opus fixture, exposed NV12, AI High, QP14 and a 4K output. Disposable profiles used matching extensions/native binaries and identical direct-CDP launch flags. Repeat trials settled four seconds after a seek, then sampled counters every 200 ms for twelve seconds. The initial optimized trial used an already warm session. No build or other benchmark ran during these browser samples; normal desktop applications remained open.
+
+| Observation                                 | v0.3.1        | Optimized working tree |
+| ------------------------------------------- | ------------- | ---------------------- |
+| Presented FPS, median of three short trials | 54.29         | 59.87                  |
+| Presented FPS, trial range                  | 50.85–54.29   | 59.32–59.87            |
+| Native dispatch p50, including GPU worker   | 6.01 ms       | 4.85 ms                |
+| WebSocket request/response round trip p50   | 12.20 ms      | 11.20 ms               |
+| Inference p50                               | 1.60 ms       | 1.60 ms                |
+| Shared-input copy p50                       | Not available | 0.13 ms                |
+
+This is about **10% higher median presented throughput** for this synthetic setup, near its 60 FPS source ceiling. It is not evidence of faster AI inference, universal 4K60, or parity with the upstream Python application. Each trial lost zero or one decoded picture; capture backpressure skips are separate and source playback-quality counters were not collected in this comparison. The enhanced 4K screenshot was inspected: the output was visible and controls/captions remained above it. A fresh independent Media hardware-decoder trace and physical A/V synchronization were not measured in these trials.
+
+A separate single native-transport pair sent 180 deterministic 1080p NV12 ramp frames through the real loopback/GPU-process path, with two outstanding requests and the first thirty completions excluded. It observed 90.77 → 99.92 completions/s; this excludes browser capture/decode/presentation. The different ramp produces much larger AV1 packets than the browser fixture, so the two throughput numbers are not interchangeable.
+
+The earlier approximately 21 FPS Playwright/pipe baseline was reproduced before editing, but it used a different browser launch mode and is **not** used to calculate this speedup. Subsequent Brave automation launches stalled at startup. Direct debugging revealed Brave Origin's startup page; the matching comparison above used separate direct-CDP sessions. Chromium 148's RGBA/software-decoder 1080p→4K control stalled and failed sustained presentation; it is not supported performance evidence. Its headed 360p→720p GPU lifecycle fixture passed, including original recovery, pause, seek, replacement, SPA/fullscreen/caption bypass, backend retry, settings persistence and idle VRAM release; hidden state required emulation.
+
+Ordinary regression checks cover shared-memory bounds, resize seals, reuse, malformed input before GPU access, four-request admission, decoder cancellation, suspended RAF recovery and timestamp-order presentation. The final timestamp-ordering guard was added after the stored performance samples and checked separately. These short trials do not establish long-run memory use, CPU use, performance on other GPUs, audible synchronization, or 8K throughput.

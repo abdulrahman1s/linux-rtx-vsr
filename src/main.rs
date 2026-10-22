@@ -75,7 +75,10 @@ enum Commands {
         _extra: Vec<String>,
     },
     #[command(hide = true)]
-    GpuWorker,
+    GpuWorker {
+        #[arg(long)]
+        frame_fd: i32,
+    },
 }
 #[derive(Subcommand)]
 enum ConfigAction {
@@ -125,7 +128,7 @@ fn run() -> Result<()> {
         ),
         Commands::Daemon => daemon::run(paths.clone(), paths.load()?)?,
         Commands::NativeHost { origin, .. } => daemon::native_host(&paths, &origin)?,
-        Commands::GpuWorker => worker::run(&paths.load()?)?,
+        Commands::GpuWorker { frame_fd } => worker::run(&paths.load()?, frame_fd)?,
         Commands::Config { action } => match action {
             ConfigAction::Show => println!("{}", serde_json::to_string_pretty(&paths.load()?)?),
             ConfigAction::Path => println!("{}", paths.config.join("config.json").display()),

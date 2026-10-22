@@ -1,4 +1,5 @@
 import type { FrameMetadata } from './protocol.ts';
+import { MAX_IN_FLIGHT } from './frame-budget.ts';
 // Owns codec negotiation, pending output and shutdown. VideoFrames remain in
 // the decoding/presentation worker; no ImageBitmap conversion or pixel readback.
 export interface PacketDecoder {
@@ -66,7 +67,7 @@ export function createPacketDecoder(): PacketDecoder {
       }
       await configuring;
       if (closed) throw new Error('Video decoder is closed');
-      if (pending.size >= 2) throw new Error('AV1 decoder exceeded its bounded queue');
+      if (pending.size >= MAX_IN_FLIGHT) throw new Error('AV1 decoder exceeded its bounded queue');
       const timestamp = ++sequence;
       return new Promise<VideoFrame>((resolve, reject) => {
         pending.set(timestamp, { resolve, reject });

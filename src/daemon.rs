@@ -26,7 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tungstenite::{
-    Message,
+    Bytes, Message,
     handshake::server::{ErrorResponse, Request, Response},
     protocol::WebSocketConfig,
 };
@@ -162,7 +162,7 @@ pub fn stop(paths: &Paths) -> Result<()> {
 }
 type Reply = Result<(Vec<u8>, Value)>;
 struct Job {
-    bytes: Vec<u8>,
+    bytes: Bytes,
     quality: u32,
     scale: f64,
     reply: mpsc::SyncSender<Reply>,
@@ -407,7 +407,7 @@ fn stream(
                 shared.touch();
                 let (reply, rx) = mpsc::sync_channel(1);
                 let job = Job {
-                    bytes: bytes.to_vec(),
+                    bytes,
                     quality,
                     scale,
                     reply,

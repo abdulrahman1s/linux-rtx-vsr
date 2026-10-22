@@ -25,7 +25,7 @@ const env = {
 const bin = path.resolve(process.env.VSR_BIN || 'target/debug/linux-rtx-vsr');
 const cli = (...args: string[]) => execFileSync(bin, args, { env, encoding: 'utf8' });
 const id = 'pdobgdmlfcnimbnndkchfocncchfoadm';
-const extension = path.resolve('build/extension');
+const extension = path.resolve(process.env.VSR_EXTENSION_DIR || 'build/extension');
 const fixtureSize = process.env.VSR_FIXTURE_SIZE || '640x360';
 const fixtureFps = Number(process.env.VSR_FIXTURE_FPS || 30);
 if (!/^\d+x\d+$/.test(fixtureSize) || ![24, 30, 60].includes(fixtureFps))

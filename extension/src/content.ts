@@ -4,6 +4,7 @@ import { VsrPresentationClock } from './presentation-clock.ts';
 import { DEFAULTS } from './policy.ts';
 import { request } from './messaging.ts';
 import { planOutput } from './resolution.ts';
+import { captureCapacity, MAX_IN_FLIGHT } from './frame-budget.ts';
 import type { Policy, PlaybackState, PlaybackStatus, FrameMessage } from './protocol.ts';
 declare global {
   var __linuxRtxVsr: boolean | undefined;
@@ -22,7 +23,7 @@ interface Session {
   parent?: HTMLElement;
   cleanup?: () => void;
   ready?: boolean;
-  buffer?: ArrayBuffer | null;
+  buffers: ArrayBuffer[];
 }
 (() => {
   if (globalThis.__linuxRtxVsr) return;
@@ -149,6 +150,7 @@ interface Session {
       callback: 0,
       created: Date.now(),
       lastPresented: 0,
+      buffers: [],
     };
     session = s;
     state('starting', 'Starting NVIDIA VideoSuperRes…');
@@ -202,7 +204,8 @@ interface Session {
           capture(s);
         }
         if (data.type === 'available') s.pending = Math.max(0, s.pending - 1);
-        if (data.type === 'recycle') s.buffer = data.buffer;
+        if (data.type === 'recycle' && s.buffers.length < MAX_IN_FLIGHT)
+          s.buffers.push(data.buffer);
         if (data.type === 'decoded') audio.update(data.ageMs);
         if (data.type === 'stale') {
           iframe.style.opacity = '0';
@@ -279,13 +282,24 @@ interface Session {
       }
       clock.observe(metadata, s.video.playbackRate, s.video.currentTime, now);
       sendClock(s);
-      if (s.pending < 2 && s.ready) {
+      if (s.pending < MAX_IN_FLIGHT && s.ready) {
         try {
           const frame = new VideoFrame(s.video, {
             timestamp: Math.round(metadata.mediaTime * 1e6),
           });
-          s.pending++;
-          copyFrame(s, frame, metadata.mediaTime);
+          const bytes =
+            32 +
+            frame.displayWidth *
+              frame.displayHeight *
+              (frame.format === 'NV12' &&
+              frame.displayWidth % 2 === 0 &&
+              frame.displayHeight % 2 === 0
+                ? 1.5
+                : 4);
+          if (s.pending < captureCapacity(bytes)) {
+            s.pending++;
+            copyFrame(s, frame, metadata.mediaTime);
+          } else frame.close();
         } catch (error) {
           fail(
             `Cannot read this video: ${errorMessage(error)}. Protected and cross-origin restricted media are unsupported.`,
@@ -316,8 +330,8 @@ interface Session {
         throw new Error('Full-range SD NV12 is unsupported');
       const format = nv12 ? (frame.colorSpace?.fullRange ? 3 : matrix === 'bt709' ? 1 : 2) : 0;
       const size = nv12 ? (w * h * 3) / 2 : w * h * 4;
-      const buffer = s.buffer?.byteLength === 32 + size ? s.buffer : new ArrayBuffer(32 + size);
-      s.buffer = null;
+      const recycled = s.buffers.pop();
+      const buffer = recycled?.byteLength === 32 + size ? recycled : new ArrayBuffer(32 + size);
       const options: VideoFrameCopyToOptions = nv12
         ? {
             // Already NV12. Brave rejects an explicit non-RGB conversion
@@ -347,6 +361,7 @@ interface Session {
           buffer,
           sequence,
           captureMs: performance.now() - copyAt,
+          copiedAt: performance.timeOrigin + performance.now(),
           epoch: s.epoch,
         },
         [buffer],
