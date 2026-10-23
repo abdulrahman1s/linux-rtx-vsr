@@ -4,6 +4,26 @@ Enhance browser video locally with **NVIDIA VideoSuperRes** and a Chromium exten
 
 This is an independent, experimental community project, not an NVIDIA product.
 
+## Image quality
+
+Both comparisons use **AI High (3)** with **AV1 QP 14**, captured through the real NVIDIA VideoSuperRes pipeline on an RTX 5090. Each pair starts from the same compressed input: **bilinear scaling on the left, Linux RTX VSR on the right**. The enlarged crops show the same region on both sides.
+
+### 480p → Full HD (1080p)
+
+![480p to 1080p comparison: bilinear scaling on the left and NVIDIA VideoSuperRes High on the right, with matching enlarged crops](docs/images/480p-to-1080p-comparison.webp)
+
+**Raw images:** [480p input](docs/images/480p-source.webp) · [1080p bilinear](docs/images/480p-bilinear-1080p.webp) · [1080p VSR](docs/images/480p-vsr-1080p.webp).
+
+### 720p → 4K (2160p)
+
+![720p to 4K comparison: bilinear scaling on the left and NVIDIA VideoSuperRes High on the right, with matching enlarged crops](docs/images/720p-to-4k-comparison.webp)
+
+**Raw images:** [720p input](docs/images/720p-source.webp) · [4K bilinear](docs/images/720p-bilinear-4k.webp) · [4K VSR](docs/images/720p-vsr-4k.webp).
+
+The raw images are full-size lossless WebP files without labels or crops. In the extension popup, **AI quality** offers Low (1), Medium (2), **High (3, default)**, and Ultra (4); the **Output target** is selected separately. Results depend on the source and preset. These are controlled still-image examples; see the [capture settings and method](docs/images/README.md).
+
+Artwork: _Big Buck Bunny_, © 2008 Blender Foundation / [www.bigbuckbunny.org](https://www.bigbuckbunny.org), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Original images: [Bunny](https://peach.blender.org/wp-content/uploads/bbb-splash.png) · [Rodents](https://peach.blender.org/wp-content/uploads/rodents.png).
+
 ## Before you install
 
 - **Linux x86-64** with an NVIDIA RTX **Ada or Blackwell** GPU that supports AV1 encoding. Older RTX Turing/Ampere cards are unsupported.

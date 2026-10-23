@@ -2,6 +2,10 @@
 
 The project's original Rust, JavaScript, packaging, and documentation are MIT-licensed (Copyright © 2026 Abdulrahman Salah). NVIDIA runtime software and models have separate terms and are not included in Git or release archives.
 
+## README comparison artwork
+
+The WebP images in `docs/images/` are derived from the _Big Buck Bunny_ gallery images [bbb-splash.png](https://peach.blender.org/wp-content/uploads/bbb-splash.png) and [rodents.png](https://peach.blender.org/wp-content/uploads/rodents.png), © 2008 Blender Foundation / [www.bigbuckbunny.org](https://www.bigbuckbunny.org). They retain the artwork's [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/) license; see the project's [license information](https://peach.blender.org/about/). Modifications include downsampling, H.264 compression, bilinear scaling or NVIDIA VideoSuperRes enhancement, lossless WebP conversion, and labeled comparison layouts with enlarged crops. [Capture details](docs/images/README.md).
+
 ## linux-nvidia-vsr
 
 Source: <https://github.com/maxiarat1/linux-nvidia-vsr>, inspected commit `5766a6e56a4eb1b134c6d00cbf363c592ad48c61`.
