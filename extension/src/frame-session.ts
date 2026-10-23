@@ -57,8 +57,8 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   function send(value: FrameMessage) {
     port?.postMessage(value);
   }
-  function fail(message: string) {
-    if (!stopped) send({ type: 'error', message });
+  function fail(message: string, retryable = false) {
+    if (!stopped) send({ type: 'error', message, retryable });
     closeAll();
   }
   function flush() {
@@ -80,10 +80,10 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   ws = env.connect(`ws://127.0.0.1:${auth.port}/v1/stream`);
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => ws.send(JSON.stringify({ token: auth.token, quality, scale, protocol: 3 }));
-  ws.onerror = () => fail('Cannot connect to the local engine. Run linux-rtx-vsr doctor.');
+  ws.onerror = () => fail('Cannot connect to the local engine. Run linux-rtx-vsr doctor.', true);
   ws.onclose = () => {
     if (!stopped)
-      fail('Engine disconnected. The original video is playing; enable again to retry.');
+      fail('Engine disconnected. The original video is playing; enable again to retry.', true);
   };
   ws.onmessage = async (event) => {
     if (typeof event.data === 'string') {

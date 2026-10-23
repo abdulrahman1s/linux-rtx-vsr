@@ -161,6 +161,7 @@ try {
   }
   // Exercise the actual default origin without contacting YouTube. Deliberately
   // omit its dynamic registration: the navigation recovery must attach anyway.
+  const siteScripts = await worker.evaluate(() => chrome.scripting.getRegisteredContentScripts());
   await worker.evaluate(() => chrome.scripting.unregisterContentScripts({ ids: ['vsr-sites'] }));
   const youtube = await context.newPage();
   await youtube.route('https://www.youtube.com/**', (route) =>
@@ -215,6 +216,7 @@ try {
   await expectAutomaticAttachment();
   await attachmentPopup.close();
   await youtube.close();
+  await worker.evaluate((scripts) => chrome.scripting.registerContentScripts(scripts), siteScripts);
   console.log('Automatic attachment passed: YouTube navigation, existing tab, global re-enable');
   async function expectAutomaticAttachment() {
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -630,15 +632,10 @@ try {
         tabId,
       );
     await waitState((v) => v?.state === 'active');
-    // Backend failure must reveal the original immediately, then permit retry.
+    // A lost backend must recover automatically with a new stream epoch.
+    const previousEpoch = (await state())?.epoch;
     cli('stop');
-    await waitState((v) => ['error', 'bypassed'].includes(v?.state || ''));
-    assert.equal(await page.locator('.player iframe').count(), 0);
-    await worker.evaluate(
-      (tabId) => chrome.tabs.sendMessage(tabId, { type: 'policy-changed' }),
-      tabId,
-    );
-    await waitState((v) => v?.state === 'active');
+    await waitState((v) => v?.state === 'active' && v.epoch !== previousEpoch);
     const backend = JSON.parse(cli('status'));
     gpuWorkerPids = [
       ...new Set(
@@ -758,6 +755,83 @@ try {
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${id}/popup.html`);
   await popup.screenshot({ path: 'test-results/popup.png' });
+  // Watch-party layout: a permitted wrapper contains a cross-origin YouTube
+  // player. YouTube's default rule must not enable a disabled enclosing site.
+  const embedded = await context.newPage();
+  await embedded.route(`${origin}/embedded`, (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<!doctype html><iframe width="800" height="550" src="/wrapper"></iframe>',
+    }),
+  );
+  await embedded.route(`${origin}/wrapper`, (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<!doctype html><iframe width="750" height="500" allow="autoplay" src="https://www.youtube.com/embed/local-fixture"></iframe>',
+    }),
+  );
+  await embedded.route('https://www.youtube.com/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const response = await fetch(`${origin}${pathname}`);
+    await route.fulfill({
+      contentType: response.headers.get('content-type')!,
+      body: Buffer.from(await response.arrayBuffer()),
+    });
+  });
+  await embedded.goto(`${origin}/embedded`);
+  const embeddedTab = await worker.evaluate(
+    async (url) => (await chrome.tabs.query({})).find((tab) => tab.url === url)!.id!,
+    `${origin}/embedded`,
+  );
+  const embeddedState = () =>
+    worker.evaluate(
+      async (tabId) =>
+        (await chrome.storage.session.get(`state:${tabId}`))[`state:${tabId}`] as
+          PlaybackStatus | undefined,
+      embeddedTab,
+    );
+  async function waitEmbedded(predicate: (value: PlaybackStatus | undefined) => boolean) {
+    const deadline = Date.now() + (gpu ? 165000 : 20000);
+    while (Date.now() < deadline) {
+      const value = await embeddedState();
+      if (predicate(value)) return value;
+      await Bun.sleep(100);
+    }
+    throw new Error(`Embedded state timeout: ${JSON.stringify(await embeddedState())}`);
+  }
+  await waitEmbedded((value) => value?.state === 'disabled');
+  await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'settings', enabled: true }));
+  await waitEmbedded((value) => value?.state === 'disabled');
+  const enabled = await popup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ type: 'manual', tabId, enabled: true }),
+    embeddedTab,
+  );
+  assert.ok(!enabled.error, JSON.stringify(enabled));
+  await waitEmbedded((value) => value?.state === 'paused');
+  const playerFrame = embedded
+    .frames()
+    .find((frame) => frame.url().startsWith('https://www.youtube.com/'))!;
+  await playerFrame.click('#play');
+  const embeddedResult = await waitEmbedded(
+    (value) => value?.state === 'error' || value?.state === 'active',
+  );
+  if (gpu)
+    assert.equal(embeddedResult?.state, 'active', embeddedResult?.message || 'Embedded GPU output');
+  else assert.match(embeddedResult!.message, /native|host|not found/i);
+  // Parent ready reports arrive continuously; the player's result must persist.
+  await Bun.sleep(700);
+  assert.equal((await embeddedState())?.state, embeddedResult?.state);
+  const disabled = await popup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ type: 'manual', tabId, enabled: false }),
+    embeddedTab,
+  );
+  assert.ok(!disabled.error, JSON.stringify(disabled));
+  await waitEmbedded((value) => value?.state === 'disabled');
+  assert.equal(await playerFrame.locator('.player iframe').count(), 0);
+  assert.ok(await playerFrame.locator('#main').evaluate((v: HTMLVideoElement) => !v.paused));
+  await embedded.close();
+  await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'settings', enabled: false }));
+  console.log('Embedded player checks passed: parent policy, nested attachment, status, disable');
   const saved = await popup.evaluate(
     (tabId) => chrome.runtime.sendMessage({ type: 'automatic', tabId, enabled: true }),
     tabId,

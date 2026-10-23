@@ -405,9 +405,25 @@ fn stream(
     // A decoder belongs to one connection, while the GPU process survives short
     // pauses/seeks. Every new connection must start a fresh prediction chain.
     let mut first_frame = true;
+    let mut last_frame = Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
-        match ws.read()? {
+        // Poll often enough for stop(), but tolerate short capture stalls on
+        // buffered/transitioning players without dropping an authorized stream.
+        let message = match ws.read() {
+            Ok(message) => message,
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && last_frame.elapsed() < Duration::from_secs(15) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match message {
             Message::Binary(bytes) => {
+                last_frame = Instant::now();
                 let received_wall_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
                     .as_secs_f64()

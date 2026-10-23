@@ -125,7 +125,8 @@ export type CaptureMessage =
     };
 export type FrameMessage =
   | { type: 'ready' | 'available' }
-  | { type: 'error' | 'stale'; message: string }
+  | { type: 'error'; message: string; retryable?: boolean }
+  | { type: 'stale'; message: string }
   | { type: 'recycle'; buffer: ArrayBuffer }
   | { type: 'decoded'; ageMs: number }
   | {

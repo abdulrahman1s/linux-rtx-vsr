@@ -46,7 +46,8 @@ interface Session {
     hoverUntil = 0,
     lastUrl = location.href,
     lastState = '',
-    lastReport = 0;
+    lastReport = 0,
+    retryAfter = 0;
   const audio = new VsrAudioSync(),
     clock = new VsrPresentationClock();
   function key(v: HTMLVideoElement | null) {
@@ -185,6 +186,16 @@ interface Session {
         if (seq !== generation) return;
         const data = event.data as FrameMessage;
         if (data.type === 'error') {
+          // A transient backend/socket loss gets the same single retry as a
+          // startup timeout. Require actual presentation to reset the budget.
+          if (data.retryable && startupRetryKey !== s.key) {
+            startupRetryKey = s.key;
+            stop();
+            // Let the old daemon/stream finish releasing its lock and lease.
+            retryAfter = Date.now() + 500;
+            reconcile();
+            return;
+          }
           fail(data.message);
           return;
         }
@@ -392,7 +403,7 @@ interface Session {
       startupRetryKey = null;
     }
     if (!video) {
-      state('ready', 'Waiting for a visible top-level video');
+      state('ready', 'Waiting for a visible video in this page or permitted player frame');
       return;
     }
     const bypass = reason(video);
@@ -417,7 +428,7 @@ interface Session {
         s.overlay?.position();
         // Release the native stream lease/decoder after a short warm pause;
         // keep only the already painted canvas until playback starts again.
-        // Stay below the native stream's three-second read deadline.
+        // Release promptly even though the native stream tolerates short stalls.
         if (Date.now() - s.pausedAt >= 1500) stop(true);
       }
       held?.overlay?.position();
@@ -431,6 +442,10 @@ interface Session {
     }
     if (failedKey === key(video)) {
       if (failureStatus) state(failureStatus.name, failureStatus.message);
+      return;
+    }
+    if (Date.now() < retryAfter) {
+      state('starting', 'Reconnecting to NVIDIA VideoSuperRes…');
       return;
     }
     if (!session) {

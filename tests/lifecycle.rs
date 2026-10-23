@@ -142,6 +142,9 @@ fn backend_lifecycle_origin_security_and_idle_exit() {
             .unwrap()
             .contains("Another tab")
     );
+    // A short capture stall must not close the authorized stream. No GPU
+    // work is needed to distinguish recovery from a dead socket.
+    thread::sleep(Duration::from_secs(4));
     // A malformed frame reaches the real Rust GPU subprocess but is rejected
     // before loading NVIDIA libraries. Ordinary CI verifies worker recovery.
     ws.send(tungstenite::Message::Binary(vec![1, 2, 3].into()))

@@ -24,6 +24,8 @@ function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>) {
     send: (value: unknown) => sent.push(value),
     close() {},
     onopen: () => {},
+    onclose: () => {},
+    onerror: () => {},
     onmessage: async (_event: { data: string | ArrayBuffer }) => {},
   };
   const stop = startFrameSession(
@@ -115,6 +117,23 @@ test('old JPEG protocol cannot become ready or active', async () => {
   await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 1 }) });
   assert.ok(f.messages.some((m) => m.type === 'error' && /update/.test(m.message)));
   assert.ok(!f.messages.some((m) => m.type === 'ready' || m.type === 'presented'));
+});
+test('transport failures are retryable, while explicit stop and protocol errors are not', async () => {
+  const disconnected = fixture();
+  disconnected.socket.onclose();
+  disconnected.socket.onerror();
+  assert.equal(disconnected.messages.filter((m) => m.type === 'error').length, 1);
+  assert.ok(disconnected.messages.some((m) => m.type === 'error' && m.retryable));
+  const connecting = fixture();
+  connecting.socket.onerror();
+  assert.ok(connecting.messages.some((m) => m.type === 'error' && m.retryable));
+  const stopped = fixture();
+  stopped.stop();
+  stopped.socket.onclose();
+  assert.ok(!stopped.messages.some((m) => m.type === 'error'));
+  const protocol = fixture();
+  await protocol.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 1 }) });
+  assert.ok(protocol.messages.some((m) => m.type === 'error' && !m.retryable));
 });
 test('pause holds the canvas without stale reports, discards pending pictures, and resumes the same stream', async () => {
   const f = fixture();

@@ -1,10 +1,12 @@
 import { errorMessage } from './errors.ts';
 import type { RuntimeRequest, Settings, TabOverride, PlaybackStatus } from './protocol.ts';
 import { settingsWithDefaults, shouldEnhance, originOf, STATES, freshState } from './policy.ts';
+import { FrameStates } from './frame-states.ts';
 const HOST = 'io.github.abdulrahman1s.linux_rtx_vsr';
 const SCRIPTS = ['content.js'];
 const claims = new Map<string, { tab: number; at: number }>();
 const freshnessTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const frameStates = new Map<number, FrameStates>();
 async function settings(): Promise<Settings> {
   return settingsWithDefaults(
     (await chrome.storage.local.get<{ settings?: Settings }>('settings')).settings,
@@ -20,14 +22,14 @@ async function policy(tabId: number, url: string | undefined) {
   return { ...config, wanted: shouldEnhance(config, await override(tabId), url) };
 }
 async function inject(tabId: number) {
-  await chrome.scripting.executeScript({ target: { tabId }, files: SCRIPTS });
+  await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: SCRIPTS });
 }
 async function attach(tab: chrome.tabs.Tab) {
   if (tab.id === undefined || !(await policy(tab.id, tab.url)).wanted) return;
   try {
     // A saved rule does not prove that this document has a content script.
     // In particular, registration is not retroactive for restored/open tabs.
-    await chrome.tabs.sendMessage(tab.id, { type: 'probe' });
+    await chrome.tabs.sendMessage(tab.id, { type: 'probe' }, { frameId: 0 });
   } catch {
     await inject(tab.id);
   }
@@ -78,7 +80,7 @@ async function reconcileSites() {
         matches,
         js: SCRIPTS,
         runAt: 'document_idle' as const,
-        allFrames: false,
+        allFrames: true,
         persistAcrossSessions: true,
       },
     ];
@@ -94,13 +96,29 @@ async function reconcileSites() {
 async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSender) {
   const ownPage =
     sender.id === chrome.runtime.id && sender.url?.startsWith(chrome.runtime.getURL(''));
-  const content = sender.tab?.id !== undefined && sender.frameId === 0 && !ownPage;
-  if (message.type === 'policy' && content) return policy(sender.tab!.id!, sender.url);
+  const content =
+    sender.id === chrome.runtime.id &&
+    sender.tab?.id !== undefined &&
+    sender.frameId !== undefined &&
+    !!originOf(sender.url) &&
+    !ownPage;
+  // Embedded players inherit the enclosing tab's rule, never their provider's
+  // default rule. Resolve the current tab so navigation cannot reuse an old URL.
+  const contentPolicy = async () => {
+    const tab = await chrome.tabs.get(sender.tab!.id!);
+    return policy(tab.id!, tab.url);
+  };
+  if (message.type === 'policy' && content) return contentPolicy();
   if (message.type === 'state' && content) {
     let value = freshState(message.value);
-    if (value.state === 'active' && !(await policy(sender.tab!.id!, sender.url)).wanted)
+    if (!(await contentPolicy()).wanted) {
+      frameStates.delete(sender.tab!.id!);
       value = { state: 'disabled', message: 'Enhancement disabled' };
+    }
     if (!STATES[value.state]) throw new Error('Unknown playback state');
+    const frames = frameStates.get(sender.tab!.id!) || new FrameStates();
+    frameStates.set(sender.tab!.id!, frames);
+    value = frames.update(sender.frameId!, value);
     await chrome.storage.session.set({ [`state:${sender.tab!.id!}`]: value });
     await show(sender.tab!.id!, value);
     clearTimeout(freshnessTimers.get(sender.tab!.id!));
@@ -119,8 +137,7 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
     return {};
   }
   if (message.type === 'authorize' && content) {
-    if (!(await policy(sender.tab!.id!, sender.url)).wanted)
-      throw new Error('Enhancement is disabled');
+    if (!(await contentPolicy()).wanted) throw new Error('Enhancement is disabled');
     for (const [key, value] of claims) if (Date.now() - value.at > 15000) claims.delete(key);
     if (claims.size >= 32) throw new Error('Too many requests; wait 15 seconds');
     const grant = crypto.randomUUID();
@@ -230,11 +247,15 @@ chrome.runtime.onInstalled.addListener(() => syncSites().catch(console.error));
 chrome.runtime.onStartup.addListener(() => syncSites().catch(console.error));
 chrome.permissions.onRemoved.addListener(() => syncSites().catch(console.error));
 chrome.permissions.onAdded.addListener(() => syncSites().catch(console.error));
-chrome.tabs.onRemoved.addListener((tabId) =>
-  chrome.storage.session.remove([`override:${tabId}`, `state:${tabId}`]),
-);
+chrome.tabs.onRemoved.addListener((tabId) => {
+  frameStates.delete(tabId);
+  clearTimeout(freshnessTimers.get(tabId));
+  freshnessTimers.delete(tabId);
+  chrome.storage.session.remove([`override:${tabId}`, `state:${tabId}`]);
+});
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   if (change.status === 'loading') {
+    frameStates.delete(tabId);
     chrome.storage.session.remove(`state:${tabId}`);
     const wanted = (await policy(tabId, tab.url)).wanted;
     show(tabId, {
