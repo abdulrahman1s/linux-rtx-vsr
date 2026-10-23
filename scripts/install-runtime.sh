@@ -25,7 +25,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --accept-nvidia-license) accepted=true; shift ;;
     --vfx-archive|--binary)
-      [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        die "$1 requires a value"
+      fi
       case "$1" in --vfx-archive) vfx_archive=$2 ;; --binary) binary=$2 ;; esac
       shift 2 ;;
     -h|--help) usage; exit 0 ;;

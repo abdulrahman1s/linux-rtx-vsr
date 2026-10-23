@@ -12,10 +12,10 @@ extract_runtime_archive() (
     exit 1
   }
   # A fresh destination ensures there can be no pre-existing symlink parents.
-  [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
     printf 'Extraction destination already exists: %s\n' "$destination" >&2
     exit 1
-  }
+  fi
   entries="${destination}.entries"
   unzip -Z1 "$archive" > "$entries"
   selected="${destination}.selected"

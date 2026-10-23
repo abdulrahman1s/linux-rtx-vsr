@@ -7,6 +7,7 @@ import { planOutput } from './resolution.ts';
 import { captureCapacity, MAX_IN_FLIGHT } from './frame-budget.ts';
 import { captureFormat } from './capture-format.ts';
 import { createVideoOverlay, type VideoOverlay } from './video-overlay.ts';
+import { StartupWatchdog } from './startup-watchdog.ts';
 import type { Policy, PlaybackState, PlaybackStatus, FrameMessage } from './protocol.ts';
 // A short decode hiccup should hold the painted picture rather than flashing
 // between original/enhanced. Active status still expires after 200 ms.
@@ -21,7 +22,7 @@ interface Session {
   pending: number;
   sequence: number;
   callback: number;
-  created: number;
+  startup: StartupWatchdog;
   lastPresented: number;
   port?: MessagePort;
   overlay?: VideoOverlay;
@@ -39,6 +40,7 @@ interface Session {
     session: Session | null = null,
     generation = 0;
   let failedKey: string | null = null,
+    startupRetryKey: string | null = null,
     failureStatus: { name: PlaybackState; message: string } | null = null,
     needsGesture = false,
     hoverUntil = 0,
@@ -152,12 +154,15 @@ interface Session {
       pending: 0,
       sequence: 0,
       callback: 0,
-      created: Date.now(),
+      startup: new StartupWatchdog(Date.now()),
       lastPresented: 0,
       buffers: [],
     };
     session = s;
-    state('starting', 'Starting NVIDIA VideoSuperRes…');
+    state(
+      'starting',
+      startupRetryKey === s.key ? 'Retrying NVIDIA startup…' : 'Starting NVIDIA VideoSuperRes…',
+    );
     try {
       if (!window.VideoFrame || !v.requestVideoFrameCallback)
         throw new Error('This page needs a secure context and Chromium 140+ with WebCodecs');
@@ -184,6 +189,7 @@ interface Session {
           return;
         }
         if (data.type === 'ready') {
+          s.startup.progress('capture', Date.now());
           s.ready = true;
           sendClock(s);
           capture(s);
@@ -191,7 +197,10 @@ interface Session {
         if (data.type === 'available') s.pending = Math.max(0, s.pending - 1);
         if (data.type === 'recycle' && s.buffers.length < MAX_IN_FLIGHT)
           s.buffers.push(data.buffer);
-        if (data.type === 'decoded' && !v.paused) audio.update(data.ageMs);
+        if (data.type === 'decoded' && !v.paused) {
+          s.startup.progress('sync', Date.now());
+          audio.update(data.ageMs);
+        }
         if (data.type === 'stale') {
           if (s.pausedAt !== undefined) return;
           state('bypassed', data.message);
@@ -211,6 +220,8 @@ interface Session {
           iframe.style.opacity = '1';
           releasePicture();
           s.lastPresented = data.presentedAt;
+          s.startup.progress('active', Date.now());
+          startupRetryKey = null;
           s.resumingAt = undefined;
           state('active', 'Fresh enhanced frames are being presented', {
             epoch: s.epoch,
@@ -344,6 +355,7 @@ interface Session {
       ])
         header.setUint32(offset, number, true);
       header.setFloat64(24, timestamp, true);
+      s.startup.progress('engine', Date.now());
       s.port!.postMessage(
         {
           type: 'capture',
@@ -377,6 +389,7 @@ interface Session {
       stop();
       video = next;
       failedKey = null;
+      startupRetryKey = null;
     }
     if (!video) {
       state('ready', 'Waiting for a visible top-level video');
@@ -448,8 +461,14 @@ interface Session {
       audio.bypass();
       state('bypassed', 'No fresh enhanced frames; showing original');
     }
-    if (!session.lastPresented && Date.now() - session.created > 15000)
-      fail('No synchronized output within 15 seconds. Run doctor --gpu, then enable again.');
+    const startupError = session.startup.error(Date.now());
+    if (startupError) {
+      if (startupRetryKey !== session.key) {
+        startupRetryKey = session.key;
+        stop();
+        begin(video);
+      } else fail(`${startupError}. Automatic retry failed; enable again to retry.`);
+    }
   }
   async function refresh() {
     try {
@@ -457,6 +476,7 @@ interface Session {
       if (policy.quality !== next.quality || policy.target !== next.target) stop();
       policy = next;
       failedKey = null;
+      startupRetryKey = null;
       reconcile();
     } catch (error) {
       fail(

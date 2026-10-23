@@ -304,9 +304,14 @@ try {
     await page.screenshot({ path: 'test-results/failure.png' });
     throw new Error(`State timeout: ${JSON.stringify(value)}`);
   }
-  const result = await waitState((v) => (gpu ? v?.state === 'active' : v?.state === 'error'));
+  // Allow every startup stage and its one retry on a genuinely cold runtime.
+  const result = await waitState(
+    (v) => v?.state === 'error' || (gpu && v?.state === 'active'),
+    gpu ? 165000 : 20000,
+  );
   console.log('Initial playback state:', JSON.stringify(result));
   if (gpu) {
+    assert.equal(result?.state, 'active', result?.message || 'GPU output must become active');
     assert.ok(result?.output && result.output.includes(String((target * 16) / 9)));
     assert.equal(result?.timings && 'codec' in result.timings, true);
     assert.ok(result!.presentedAt! > Date.now() - 1000);
@@ -655,6 +660,62 @@ try {
   } else {
     assert.match(result!.message, /native|host|not found/i);
     assert.equal(await page.locator('.player iframe').count(), 0);
+    // Stall native authorization without returning a fake engine success.
+    // Exercise the real content/bridge teardown and bounded retry in Chromium.
+    await worker.evaluate(() => {
+      const native = chrome.runtime.sendNativeMessage;
+      let attempts = 0;
+      Object.assign(globalThis, {
+        vsrStartupProbe: {
+          attempts: () => attempts,
+          restore: () => {
+            chrome.runtime.sendNativeMessage = native;
+          },
+        },
+      });
+      chrome.runtime.sendNativeMessage = (() => {
+        attempts++;
+        return new Promise(() => {});
+      }) as typeof native;
+    });
+    try {
+      // Keep the short fixture from looping/seeking during both deadlines.
+      await page.locator('#main').evaluate((v: HTMLVideoElement) => {
+        v.playbackRate = 0.25;
+        v.currentTime = 0;
+      });
+      await worker.evaluate(
+        (tabId) => chrome.tabs.sendMessage(tabId, { type: 'policy-changed' }),
+        tabId,
+      );
+      await waitState((v) => v?.state === 'starting');
+      const failure = await waitState(
+        (v) => v?.state === 'error' && /Automatic retry failed/.test(v.message),
+        40000,
+      );
+      assert.match(failure!.message, /Extension frame did not connect/);
+      assert.equal(await page.locator('.player iframe').count(), 0);
+      await Bun.sleep(500);
+      assert.equal(
+        await worker.evaluate(() =>
+          (
+            globalThis as unknown as { vsrStartupProbe: { attempts(): number } }
+          ).vsrStartupProbe.attempts(),
+        ),
+        2,
+        'A stalled startup must retry exactly once without refreshing the tab',
+      );
+      console.log('Startup recovery passed: one automatic retry, terminal error, overlay cleanup');
+    } finally {
+      await worker.evaluate(() =>
+        (
+          globalThis as unknown as { vsrStartupProbe: { restore(): void } }
+        ).vsrStartupProbe.restore(),
+      );
+      await page.locator('#main').evaluate((v: HTMLVideoElement) => {
+        v.playbackRate = 1;
+      });
+    }
   }
   await worker.evaluate(async (tabId) => {
     await chrome.storage.local.set({

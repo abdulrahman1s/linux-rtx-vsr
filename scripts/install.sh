@@ -29,7 +29,9 @@ shell_name=${shell_name##*/}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --prefix|--browser)
-      [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        die "$1 requires a value"
+      fi
       case "$1" in --prefix) install_prefix=$2 ;; --browser) browser=$2 ;; esac
       shift 2 ;;
     --add-to-path) add_to_path=true; shift ;;
