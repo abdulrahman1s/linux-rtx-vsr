@@ -1,10 +1,14 @@
 # Browser integration
 
-Choose your browser when installing a release:
+The release installer automatically detects supported browsers on `PATH` and registers native messaging for every match:
 
 ```sh
-sh scripts/install.sh --browser helium --add-to-path
+sh scripts/install.sh --add-to-path
 ```
+
+Detection checks browser executable names, including common distribution aliases, without opening any browsers. It works before the browser's first launch and ignores leftover profile directories. Multiple aliases for the same browser produce one registration. If no supported browser is found, the application still installs and prints the command for manual registration.
+
+To register only one browser, use `sh scripts/install.sh --browser helium --add-to-path`. `--browser auto` explicitly selects the default detection behavior. For a portable browser outside `PATH`, select its browser name explicitly or add its executable directory to `PATH` before running the installer.
 
 To register another browser later:
 
@@ -34,7 +38,7 @@ Load the printed extension directory through your browser's extensions page with
 | Vivaldi Snapshot                                                 | `vivaldi-snapshot`     | `vivaldi-snapshot`                    |
 | Helium                                                           | `helium`               | `net.imput.helium`                    |
 
-The native manifest is placed in `NativeMessagingHosts` under the selected directory. `XDG_CONFIG_HOME` overrides `~/.config`; Chrome and Chromium also honor `CHROME_CONFIG_HOME`. Register each browser you use, then check the connection in the extension popup.
+The native manifest is placed in `NativeMessagingHosts` under each selected directory. `XDG_CONFIG_HOME` overrides `~/.config`; Chrome and Chromium also honor `CHROME_CONFIG_HOME`. Load the extension in each browser you use, then check the connection in its popup.
 
 These options provide native messaging registration. Real enhanced playback has been tested only on the combinations in the [validation record](validation.md). Other builds still need compatible AV1 WebCodecs decoding, video capture, and Web Audio. Flatpak and Snap browser packages are unsupported.
 

@@ -1,6 +1,6 @@
 // A release must install and run outside the checkout with a disposable profile.
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, access, mkdir, symlink } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, access, mkdir, symlink, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -79,6 +79,17 @@ try {
   ])
     assert.throws(() => install(...args));
   assert.equal(await Bun.file(binary).exists(), false);
+  await mkdir(path.join(env.XDG_CONFIG_HOME, 'net.imput.helium/Default'), { recursive: true });
+  const nonExecutable = path.join(toolDir, 'chromium');
+  await Bun.write(nonExecutable, '#!/bin/sh\nexit 99\n');
+  await chmod(nonExecutable, 0o644);
+  const noBrowsers = install('--add-to-path');
+  assert.match(noBrowsers, /No supported browsers detected on PATH/);
+  assert.equal(
+    await Bun.file(path.join(env.XDG_STATE_HOME, 'linux-rtx-vsr/integrations.json')).exists(),
+    false,
+  );
+  await rm(nonExecutable);
   install('--prefix', env.LINUX_RTX_VSR_PREFIX, '--browser', 'chromium', '--add-to-path');
   const bashrc = path.join(env.HOME, '.bashrc');
   const startup = await Bun.file(bashrc).text();
@@ -115,6 +126,83 @@ try {
     (await readdir(path.dirname(binary))).some((n) => n.startsWith('.linux-rtx-vsr.')),
     false,
   );
+
+  // Fake browser executables must only be discovered, never launched. Register
+  // against the real CLI to verify channel names and native manifest locations.
+  const browsers = [
+    ['chromium', 'chromium', ['chromium', 'chromium-browser', 'ungoogled-chromium']],
+    ['chrome', 'google-chrome', ['google-chrome', 'google-chrome-stable']],
+    ['chrome-beta', 'google-chrome-beta', ['google-chrome-beta']],
+    ['chrome-dev', 'google-chrome-unstable', ['google-chrome-unstable', 'google-chrome-dev']],
+    ['brave', 'BraveSoftware/Brave-Browser', ['brave', 'brave-browser', 'brave-browser-stable']],
+    ['brave-beta', 'BraveSoftware/Brave-Browser-Beta', ['brave-beta', 'brave-browser-beta']],
+    [
+      'brave-nightly',
+      'BraveSoftware/Brave-Browser-Nightly',
+      ['brave-nightly', 'brave-browser-nightly'],
+    ],
+    ['brave-origin', 'BraveSoftware/Brave-Origin', ['brave-origin', 'brave-origin-browser']],
+    [
+      'brave-origin-nightly',
+      'BraveSoftware/Brave-Origin-Nightly',
+      ['brave-origin-nightly', 'brave-origin-browser-nightly'],
+    ],
+    ['edge', 'microsoft-edge', ['microsoft-edge', 'microsoft-edge-stable']],
+    ['edge-beta', 'microsoft-edge-beta', ['microsoft-edge-beta']],
+    ['edge-dev', 'microsoft-edge-dev', ['microsoft-edge-dev']],
+    ['vivaldi', 'vivaldi', ['vivaldi', 'vivaldi-stable']],
+    ['vivaldi-snapshot', 'vivaldi-snapshot', ['vivaldi-snapshot']],
+    ['helium', 'net.imput.helium', ['helium', 'helium-browser']],
+  ] as const;
+  const neverLaunch = path.join(root, 'browser must not launch');
+  const launchMarker = path.join(root, 'browser-launched');
+  await Bun.write(neverLaunch, `#!/bin/sh\nprintf launched > "${launchMarker}"\nexit 99\n`);
+  await chmod(neverLaunch, 0o755);
+  // Every alias must work on its own; later rounds also exercise --browser auto.
+  // The last round exposes every alias together to check deduplication.
+  for (let round = 0; round < 4; round++) {
+    const roundEnv = {
+      ...installEnv,
+      XDG_CONFIG_HOME: path.join(root, `detected config ${round}`),
+      XDG_STATE_HOME: path.join(root, `detected state ${round}`),
+    };
+    const aliases = browsers.flatMap(([, , names]) =>
+      round === 3 ? [...names] : [names[Math.min(round, names.length - 1)]!],
+    );
+    for (const alias of aliases) await symlink(neverLaunch, path.join(toolDir, alias));
+    try {
+      const output = execFileSync('sh', [installer, ...(round ? ['--browser', 'auto'] : [])], {
+        env: roundEnv,
+        encoding: 'utf8',
+      });
+      const records = await Bun.file(
+        path.join(roundEnv.XDG_STATE_HOME, 'linux-rtx-vsr/integrations.json'),
+      ).json();
+      assert.equal(Object.keys(records).length, browsers.length);
+      for (const [, directory] of browsers) {
+        const manifest = path.join(
+          roundEnv.XDG_CONFIG_HOME,
+          directory,
+          'NativeMessagingHosts/io.github.abdulrahman1s.linux_rtx_vsr.json',
+        );
+        assert.ok(await Bun.file(manifest).exists(), `Missing auto-detected manifest: ${manifest}`);
+        assert.equal(output.split(`Installed ${manifest}\n`).length, 2);
+      }
+      assert.equal(await Bun.file(launchMarker).exists(), false);
+      // Explicit selection takes priority even when every browser is installed.
+      const selectedConfig = path.join(root, `selected config ${round}`);
+      execFileSync('sh', [installer, '--browser', 'helium'], {
+        env: { ...roundEnv, XDG_CONFIG_HOME: selectedConfig },
+        stdio: 'pipe',
+      });
+      assert.deepEqual((await readdir(selectedConfig)).sort(), [
+        'linux-rtx-vsr',
+        'net.imput.helium',
+      ]);
+    } finally {
+      for (const alias of aliases) await rm(path.join(toolDir, alias));
+    }
+  }
 
   const runtimeScript = path.join(data, 'scripts/install-runtime.sh');
   const runtime = (...args: string[]) =>
@@ -227,6 +315,6 @@ assert.equal(
 assert.ok(entries.includes('licenses/linux-nvidia-vsr-MIT.txt'));
 assert.equal(new Set(entries).size, entries.length);
 console.log(
-  'Archive smoke passed: install/update without Bun, runtime checksum rejection/cleanup, compiled assets/notices, native startup, persistence, removal' +
+  'Archive smoke passed: install/update without Bun, browser detection/aliases/selection, runtime checksum rejection/cleanup, compiled assets/notices, native startup, persistence, removal' +
     (gpu ? ', real GPU inference' : ''),
 );

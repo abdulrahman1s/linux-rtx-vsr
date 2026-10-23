@@ -44,12 +44,12 @@ Download `linux-rtx-vsr-vVERSION-x86_64-unknown-linux-gnu.tar.gz` from [GitHub R
 ```sh
 tar -xzf linux-rtx-vsr-v*-x86_64-unknown-linux-gnu.tar.gz &&
   cd linux-rtx-vsr-v*-x86_64-unknown-linux-gnu &&
-  sh scripts/install.sh --browser chromium --add-to-path
+  sh scripts/install.sh --add-to-path
 ```
 
 Run the installer as your normal user, without `sudo`. It installs into `~/.local`, prints the extension directory, and adds the command to PATH for new terminals. Bash, Zsh, and Fish are supported. The separate extension ZIP is unnecessary for this install.
 
-For another browser, replace `chromium` with `helium`, `vivaldi`, `edge`, `chrome`, or `brave`. See [all browser options](docs/browsers.md), including beta/dev channels and Brave Origin. To choose a different application location, pass `--prefix /absolute/path`; `--add-to-path` uses that location too.
+The installer detects supported browsers on your `PATH` and registers integration for each one, including Helium, Vivaldi, Edge, Chrome, Brave, and their supported channels. To select just one, pass `--browser helium` (see [all browser options](docs/browsers.md)). To choose a different application location, pass `--prefix /absolute/path`; `--add-to-path` uses that location too.
 
 ### 2. Install the NVIDIA runtime
 
@@ -202,10 +202,10 @@ The native API listens only on loopback with exact extension-origin checking and
 For a release update, download and extract the new archive as above, then run:
 
 ```sh
-sh scripts/install.sh --browser chromium --add-to-path
+sh scripts/install.sh --add-to-path
 ```
 
-Use the same prefix and browser as your original installation. The installer stops the old backend, replaces the app and bundled files, and exports matching extension assets. Register each additional browser again with `integration install --browser BROWSER`. Click **Reload** on the extension in `chrome://extensions`, then refresh open video tabs.
+Use the same prefix as your original installation. The installer stops the old backend, replaces the app and bundled files, and registers all detected browsers again with matching extension assets. If you previously selected one browser with `--browser`, use that option again. Click **Reload** on the extension in each browser's `chrome://extensions`, then refresh open video tabs.
 
 Your configuration, site rules, and NVIDIA runtime are retained; do not rerun the runtime installer for an ordinary application update. Source installs use `linux-rtx-vsr stop` followed by `cargo install --locked --path . --force` and `integration install`; Nix installs update their pinned flake input and rebuild. Keep application and extension versions together. See [runtime updates](docs/runtime.md#runtime-updates) for separate NVIDIA updates.
 

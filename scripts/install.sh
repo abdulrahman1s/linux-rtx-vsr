@@ -10,7 +10,8 @@ Usage: sh scripts/install.sh [--prefix DIRECTORY] [--browser BROWSER] [--add-to-
 Install the application and documentation without downloading NVIDIA software.
   --prefix DIRECTORY  Absolute install prefix (default: $HOME/.local).
                       LINUX_RTX_VSR_PREFIX also sets this default.
-  --browser BROWSER   Also register native messaging and export the extension.
+  --browser BROWSER   Register only this browser instead of detecting browsers.
+                      Default: auto (all supported browsers found on PATH).
                       See the README for browser names.
   --add-to-path       Add the installed bin directory to your shell startup file.
                       Supports Bash, Zsh, Fish and POSIX sh; uses $SHELL.
@@ -21,7 +22,7 @@ EOF
 }
 
 install_prefix=${LINUX_RTX_VSR_PREFIX:-"${HOME:?HOME must be set}/.local"}
-browser=
+browser=auto
 add_to_path=false
 shell_name=${SHELL:-sh}
 shell_name=${shell_name##*/}
@@ -38,9 +39,47 @@ while [ "$#" -gt 0 ]; do
 done
 case "$install_prefix" in /*) ;; *) die '--prefix must be an absolute path' ;; esac
 case "$browser" in
-  ''|chromium|chrome|chrome-beta|chrome-dev|brave|brave-beta|brave-nightly|brave-origin|brave-origin-nightly|edge|edge-beta|edge-dev|vivaldi|vivaldi-snapshot|helium) ;;
+  auto|chromium|chrome|chrome-beta|chrome-dev|brave|brave-beta|brave-nightly|brave-origin|brave-origin-nightly|edge|edge-beta|edge-dev|vivaldi|vivaldi-snapshot|helium) ;;
   *) die "Unsupported browser: $browser (use --help)" ;;
 esac
+# Detect executables without launching browsers or inferring installation from
+# profile directories, which can remain after a browser has been uninstalled.
+browser_installed() {
+  shift # The first field is the integration name; the rest are executable aliases.
+  for candidate do
+    executable=$(command -v "$candidate" 2>/dev/null) || continue
+    case "$executable" in /snap/*|/var/lib/snapd/snap/bin/*) continue ;; esac
+    [ -f "$executable" ] && [ -x "$executable" ] && return 0
+  done
+  return 1
+}
+browsers=$browser
+if [ "$browser" = auto ]; then
+  browsers=
+  while read -r name aliases; do
+    # Alias fields below are fixed executable names, never user input.
+    # shellcheck disable=SC2086
+    if browser_installed "$name" $aliases; then
+      browsers="${browsers:+$browsers }$name"
+    fi
+  done <<'EOF'
+chromium chromium chromium-browser ungoogled-chromium
+chrome google-chrome google-chrome-stable
+chrome-beta google-chrome-beta
+chrome-dev google-chrome-unstable google-chrome-dev
+brave brave brave-browser brave-browser-stable
+brave-beta brave-beta brave-browser-beta
+brave-nightly brave-nightly brave-browser-nightly
+brave-origin brave-origin brave-origin-browser
+brave-origin-nightly brave-origin-nightly brave-origin-browser-nightly
+edge microsoft-edge microsoft-edge-stable
+edge-beta microsoft-edge-beta
+edge-dev microsoft-edge-dev
+vivaldi vivaldi vivaldi-stable
+vivaldi-snapshot vivaldi-snapshot
+helium helium helium-browser
+EOF
+fi
 for tool in dirname mkdir mktemp install cp mv rm; do
   command -v "$tool" >/dev/null 2>&1 || die "Required command not found: $tool"
 done
@@ -112,10 +151,13 @@ if [ "$add_to_path" = true ]; then
   fi
   printf 'PATH configured in %s. Open a new terminal to use linux-rtx-vsr by name.\n' "$startup"
 fi
-if [ -n "$browser" ]; then
-  "$binary" integration install --browser "$browser"
+if [ -n "$browsers" ]; then
+  printf '\nRegistering browser integration: %s\n' "$browsers"
+  for selected_browser in $browsers; do
+    "$binary" integration install --browser "$selected_browser"
+  done
 else
-  printf 'Next: "%s" integration install --browser chromium\n' "$binary"
+  printf '\nNo supported browsers detected on PATH. After installing a browser, rerun this installer\nor register it with: "%s" integration install --browser BROWSER\n' "$binary"
 fi
 printf 'Runtime setup: sh "%s/scripts/install-runtime.sh" --binary "%s" --accept-nvidia-license\n' "$data" "$binary"
 case ":${PATH:-}:" in
