@@ -70,7 +70,7 @@ const browser: FrameEnvironment = {
 // Owns transport, bounded decode queue, fresh presentation and cancellation.
 // The worker and tests cross the same seam; browser facilities vary via env.
 export function startFrameSession(init: WorkerInit, env: FrameEnvironment = browser): () => void {
-  const { port, canvas, auth, quality, scale } = init;
+  const { port, canvas, auth, quality, scale, generate } = init;
   const decoder = env.createDecoder();
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
   if (!ctx) throw new Error('Browser cannot create the presentation canvas');
@@ -82,6 +82,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   let queue: { bitmap: VideoFrame; meta: FrameMetadata; decodedAt: number }[] = [],
     stopped = false;
   let presented = 0,
+    generated = 0,
     dropped = 0,
     lastPresented = 0,
     lastReport = -Infinity,
@@ -128,6 +129,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         scale,
         protocol: 3,
         uplinks: env.createUplink ? UPLINKS : 0,
+        generate,
       }),
     );
   const disconnected = () =>
@@ -173,6 +175,8 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     }
     const meta = pending;
     pending = null;
+    // Generated pictures precede their capture's own; only that one frees it.
+    const final = !meta?.generated;
     try {
       const capture = meta && inFlight.get(meta.sequence);
       if (!meta || !capture)
@@ -205,6 +209,11 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         queue.shift()!.bitmap.close();
         dropped++;
       }
+      // Audio delay follows the oldest picture of each capture. Generated
+      // pictures are older than the captured one that arrives with them, so
+      // its age would understate the delay they need and they would miss
+      // their refresh behind it.
+      if (meta.generated_frames && !meta.generated) return;
       const mediaNow = clock
         ? clock.input + ((now() - clock.at) * clock.rate) / 1000
         : meta.timestamp;
@@ -215,8 +224,8 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     } catch (error) {
       if (!stopped) fail(errorMessage(error));
     } finally {
-      if (meta) inFlight.delete(meta.sequence);
-      if (!stopped) send({ type: 'available' });
+      if (meta && final) inFlight.delete(meta.sequence);
+      if (!stopped && final) send({ type: 'available' });
     }
   };
   tick();
@@ -313,6 +322,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
           meta.presentation_wait_ms = time - selected.decodedAt;
           lastPresented = time;
           presented++;
+          if (meta.generated) generated++;
           startupMs ??= time - started;
           // Draw every due picture; reporting at 10 Hz avoids a DOM/layout
           // inspection and a cloned stats object on the page for every frame.
@@ -324,6 +334,7 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
               presentedAt: time,
               epoch,
               presented,
+              generated,
               dropped,
               fps: (presented * 1000) / (time - started),
               latenessMs: lateness * 1000,

@@ -2,8 +2,12 @@ import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { startFrameSession, type UplinkEvents } from '../extension/src/frame-session.ts';
 import { captureCapacity } from '../extension/src/frame-budget.ts';
-import type { FrameMessage, CaptureMessage } from '../extension/src/protocol.ts';
-function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>, withUplinks = false) {
+import type { FrameMessage, CaptureMessage, Generation } from '../extension/src/protocol.ts';
+function fixture(
+  decode?: (data: ArrayBuffer) => Promise<VideoFrame>,
+  withUplinks = false,
+  generate?: Generation,
+) {
   const uplinks: { hello: unknown; sent: ArrayBuffer[]; events: UplinkEvents; closed: boolean }[] =
     [];
   const messages: FrameMessage[] = [],
@@ -44,6 +48,7 @@ function fixture(decode?: (data: ArrayBuffer) => Promise<VideoFrame>, withUplink
       auth: { port: 123, token: 'test' },
       quality: 3,
       scale: 2,
+      generate,
     },
     {
       now: () => time,
@@ -440,4 +445,55 @@ test('an engine without uplink support keeps frames on the primary socket', asyn
   f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 0 });
   assert.equal(f.uplinks.length, 0);
   assert.equal(f.sent.length, 2);
+});
+test('generated pictures present between captures and keep the capture slot until its own', async () => {
+  const f = fixture(undefined, false, { max: 4, interval: 1 / 60 });
+  f.socket.onopen();
+  assert.deepEqual(JSON.parse(f.sent[0] as string).generate, { max: 4, interval: 1 / 60 });
+  await f.socket.onmessage({ data: JSON.stringify({ type: 'ready', protocol: 3 }) });
+  f.input({ type: 'clock', epoch: 0, media: 1, input: 1, at: 1000, rate: 1 });
+  const available = () => f.messages.filter((m) => m.type === 'available').length;
+  const picture = async (sequence: number, timestamp: number, generated: boolean) => {
+    await f.socket.onmessage({
+      data: JSON.stringify({
+        type: 'frame',
+        sequence,
+        epoch: 0,
+        timestamp,
+        width: 1280,
+        height: 720,
+        generated,
+      }),
+    });
+    await f.socket.onmessage({ data: new ArrayBuffer(4) });
+  };
+  f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 1, captureMs: 1, epoch: 0 });
+  await picture(1, 1, false);
+  f.input({ type: 'capture', buffer: new ArrayBuffer(48), sequence: 2, captureMs: 1, epoch: 0 });
+  const before = available();
+  // A 30 fps capture pair: the engine's in-between picture arrives first.
+  await picture(2, 1 + 1 / 60, true);
+  assert.equal(available(), before);
+  await picture(2, 1 + 2 / 60, false);
+  assert.equal(available(), before + 1);
+  assert.ok(!f.messages.some((m) => m.type === 'error'));
+  for (const [at, draws] of [
+    [1000, 1],
+    [1000 + 1000 / 60, 2],
+    [1000 + 2000 / 60, 3],
+  ]) {
+    f.advance(at);
+    f.tick(at);
+    assert.equal(f.draws(), draws);
+  }
+  const presented = f.messages.filter((m) => m.type === 'presented').at(-1);
+  assert.ok(presented?.type === 'presented');
+  assert.equal(presented.dropped, 0);
+  f.stop();
+});
+test('a session without frame generation does not request it', () => {
+  const f = fixture();
+  f.socket.onopen();
+  assert.equal(JSON.parse(f.sent[0] as string).generate, undefined);
+  f.stop();
 });

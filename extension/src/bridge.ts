@@ -22,7 +22,15 @@ window.addEventListener('message', async (event) => {
     worker.onerror = (event) =>
       port.postMessage({ type: 'error', message: event.message || 'Frame worker stopped' });
     worker.postMessage(
-      { type: 'init', port, canvas, auth, quality: event.data.quality, scale: event.data.scale },
+      {
+        type: 'init',
+        port,
+        canvas,
+        auth,
+        quality: event.data.quality,
+        scale: event.data.scale,
+        generate: event.data.generate,
+      },
       [port, canvas],
     );
   } catch (error) {

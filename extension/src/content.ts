@@ -4,7 +4,7 @@ import { VsrPresentationClock } from './presentation-clock.ts';
 import { DEFAULTS } from './policy.ts';
 import { request } from './messaging.ts';
 import { planOutput } from './resolution.ts';
-import { captureCapacity } from './frame-budget.ts';
+import { captureCapacity, MAX_GENERATION } from './frame-budget.ts';
 import { captureFormat } from './capture-format.ts';
 import { CapturePacer } from './capture-pacer.ts';
 import { CONVERTED_NV12, createNv12Converter, type Nv12Converter } from './nv12-converter.ts';
@@ -14,6 +14,32 @@ import type { Policy, PlaybackState, PlaybackStatus, FrameMessage } from './prot
 // A short decode hiccup should hold the painted picture rather than flashing
 // between original/enhanced. Active status still expires after 200 ms.
 const PICTURE_GRACE_MS = 350;
+// Generate toward the display rate, but never past 120 fps: 4K AV1 decoding
+// and drawing above that costs the browser more than it shows.
+const MIN_GENERATED_INTERVAL_MS = 1000 / 120;
+// The display refresh period, from a few page animation frames. Measured only
+// when frame generation is on; a hidden or throttled page falls back to 60 Hz.
+function measureRefresh(): Promise<number> {
+  return new Promise((resolve) => {
+    const times: number[] = [];
+    const done = (ms: number) => {
+      clearTimeout(timer);
+      resolve(ms);
+    };
+    const timer = setTimeout(() => done(1000 / 60), 500);
+    const step = (at: number) => {
+      times.push(at);
+      if (times.length < 12) {
+        requestAnimationFrame(step);
+        return;
+      }
+      const gaps = times.slice(1).map((time, i) => time - times[i]);
+      gaps.sort((a, b) => a - b);
+      done(gaps[gaps.length >> 1]);
+    };
+    requestAnimationFrame(step);
+  });
+}
 declare global {
   var __linuxRtxVsr: boolean | undefined;
 }
@@ -50,11 +76,16 @@ interface Session {
     lastUrl = location.href,
     lastState = '',
     lastReport = 0,
-    retryAfter = 0;
+    retryAfter = 0,
+    splitAt = 0.5;
   const audio = new VsrAudioSync(),
     clock = new VsrPresentationClock();
   function key(v: HTMLVideoElement | null) {
-    return `${v?.currentSrc}|${v?.videoWidth}x${v?.videoHeight}|${policy.quality}|${policy.target}`;
+    return `${v?.currentSrc}|${v?.videoWidth}x${v?.videoHeight}|${policy.quality}|${policy.target}|${policy.frameGeneration}`;
+  }
+  function applySplit(overlay: VideoOverlay | undefined) {
+    overlay?.split(policy.splitView ? splitAt : null, (at) => (splitAt = at));
+    overlay?.position();
   }
   function state(name: PlaybackState, message: string, extra: Partial<PlaybackStatus> = {}) {
     const value = { state: name, message, ...extra },
@@ -168,6 +199,8 @@ interface Session {
       'starting',
       startupRetryKey === s.key ? 'Retrying NVIDIA startup…' : 'Starting NVIDIA VideoSuperRes…',
     );
+    // Runs alongside audio setup and authorization instead of adding a delay.
+    const refreshMs = policy.frameGeneration ? measureRefresh() : undefined;
     try {
       if (!window.VideoFrame || !v.requestVideoFrameCallback)
         throw new Error('This page needs a secure context and Chromium 140+ with WebCodecs');
@@ -180,9 +213,16 @@ interface Session {
       const auth = await request({ type: 'authorize' });
       if (seq !== generation) return;
       if (!auth?.grant) throw new Error('Extension authorization failed; reload the extension');
+      // Playback-rate changes restart the session, so the rate is fixed here.
+      const generate = refreshMs && {
+        max: MAX_GENERATION,
+        interval: (Math.max(MIN_GENERATED_INTERVAL_MS, await refreshMs) * v.playbackRate) / 1000,
+      };
+      if (seq !== generation) return;
       // The extension frame owns its visible canvas and worker. Keep its parent
       // stable: moving a live iframe reloads it and invalidates the MessagePort.
       s.overlay = createVideoOverlay(v, chrome.runtime.getURL('bridge.html'));
+      applySplit(s.overlay);
       const iframe = s.overlay.element;
       const channel = new MessageChannel();
       s.port = channel.port1;
@@ -231,7 +271,10 @@ interface Session {
           !reason(v) &&
           !v.paused
         ) {
-          iframe.style.opacity = '1';
+          if (iframe.style.opacity !== '1') {
+            iframe.style.opacity = '1';
+            s.overlay?.position();
+          }
           releasePicture();
           s.lastPresented = data.presentedAt;
           s.startup.progress('active', Date.now());
@@ -247,6 +290,7 @@ interface Session {
             inferenceMs: data.stats.inference_ms,
             dropped: data.dropped,
             presented: data.presented,
+            generated: data.generated,
             latenessMs: data.latenessMs,
             capture: { stride: s.pacer.stride, missed: s.pacer.missed },
             startupMs: data.startupMs,
@@ -268,6 +312,7 @@ interface Session {
               grant: auth.grant,
               quality: policy.quality,
               scale: planOutput(v.videoWidth, v.videoHeight, policy.target).scale,
+              generate,
               objectFit: getComputedStyle(v).objectFit,
             },
             chrome.runtime.getURL(''),
@@ -519,8 +564,16 @@ interface Session {
   async function refresh() {
     try {
       const next = await request({ type: 'policy' });
-      if (policy.quality !== next.quality || policy.target !== next.target) stop();
+      if (
+        policy.quality !== next.quality ||
+        policy.target !== next.target ||
+        policy.frameGeneration !== next.frameGeneration
+      )
+        stop();
       policy = next;
+      // Split view needs no new session; it only moves the overlay's clip.
+      applySplit(session?.overlay);
+      applySplit(held?.overlay);
       failedKey = null;
       startupRetryKey = null;
       reconcile();

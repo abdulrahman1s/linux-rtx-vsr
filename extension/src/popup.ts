@@ -5,6 +5,8 @@ import { STATES, originOf } from './policy.ts';
 type PopupElements = {
   global: HTMLInputElement;
   automatic: HTMLInputElement;
+  generation: HTMLInputElement;
+  split: HTMLInputElement;
   quality: HTMLSelectElement;
   target: HTMLSelectElement;
   manual: HTMLButtonElement;
@@ -45,6 +47,8 @@ async function refresh() {
     $('automatic').checked = settings.sites[origin || ''] === true;
     $('automatic').disabled = !origin;
     $('origin').textContent = origin || 'Open an HTTP or HTTPS video page';
+    $('generation').checked = settings.frameGeneration;
+    $('split').checked = settings.splitView;
     $('quality').value = String(settings.quality);
     $('target').value = String(settings.target);
     $('manual').textContent = policy.wanted ? 'Disable for this tab' : 'Enable for this tab';
@@ -91,6 +95,9 @@ $('quality').onchange = () =>
   act(() => request({ type: 'settings', quality: Number($('quality').value) }));
 $('target').onchange = () =>
   act(() => request({ type: 'settings', target: Number($('target').value) }));
+$('generation').onchange = () =>
+  act(() => request({ type: 'settings', frameGeneration: $('generation').checked }));
+$('split').onchange = () => act(() => request({ type: 'settings', splitView: $('split').checked }));
 $('follow').onclick = () => act(() => request({ type: 'reset-override' }));
 $('automatic').onchange = () => {
   const enabled = $('automatic').checked;

@@ -1,6 +1,10 @@
 //! Supervised Rust GPU process. NVIDIA's global runtime caches survive object
 //! destruction, so process teardown is required to reliably release all VRAM.
-use crate::{config::Config, gpu::Engine, protocol::MAX_FRAME};
+use crate::{
+    config::Config,
+    gpu::Engine,
+    protocol::{Generation, MAX_FRAME, MAX_GENERATION},
+};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -71,32 +75,48 @@ impl GpuProcess {
             frame,
         })
     }
+    // Pictures in presentation order; generated frames precede the capture's.
     pub fn process(
         &mut self,
         bytes: &[u8],
         quality: u32,
         scale: f64,
         reset: bool,
-    ) -> Result<(Vec<u8>, Value)> {
+        generation: Generation,
+    ) -> Result<Vec<(Vec<u8>, Value)>> {
         let started = Instant::now();
         self.frame.write(bytes)?;
         let copy_ms = started.elapsed().as_secs_f64() * 1000.;
         let meta = serde_json::to_vec(
-            &json!({"quality":quality,"scale":scale,"length":bytes.len(),"reset":reset}),
+            &json!({"quality":quality,"scale":scale,"length":bytes.len(),"reset":reset,"generate":generation.to_json()}),
         )?;
         write_packet(&mut self.input, &meta)?;
         self.input.flush()?;
         let deadline = Instant::now() + Duration::from_secs(30);
-        let meta = self.read_packet(8192, deadline)?;
-        let mut meta: Value = serde_json::from_slice(&meta)
-            .context("GPU worker protocol failed; check backend.log")?;
-        let bytes = self.read_packet(MAX_FRAME, deadline)?;
-        if let Some(error) = meta["error"].as_str() {
-            anyhow::bail!("{error}");
+        let mut pictures = Vec::new();
+        loop {
+            let meta = self.read_packet(8192, deadline)?;
+            let mut meta: Value = serde_json::from_slice(&meta)
+                .context("GPU worker protocol failed; check backend.log")?;
+            let bytes = self.read_packet(MAX_FRAME, deadline)?;
+            if let Some(error) = meta["error"].as_str() {
+                anyhow::bail!("{error}");
+            }
+            let more = meta["more"].as_bool() == Some(true);
+            meta.as_object_mut()
+                .context("GPU worker protocol failed")?
+                .remove("more");
+            meta["worker_round_trip_ms"] = json!(started.elapsed().as_secs_f64() * 1000.);
+            meta["shared_copy_ms"] = json!(copy_ms);
+            pictures.push((bytes, meta));
+            ensure!(
+                pictures.len() <= MAX_GENERATION as usize,
+                "GPU worker returned too many pictures"
+            );
+            if !more {
+                return Ok(pictures);
+            }
         }
-        meta["worker_round_trip_ms"] = json!(started.elapsed().as_secs_f64() * 1000.);
-        meta["shared_copy_ms"] = json!(copy_ms);
-        Ok((bytes, meta))
     }
     fn read_packet(&mut self, limit: usize, deadline: Instant) -> Result<Vec<u8>> {
         let mut length = [0u8; 4];
@@ -290,7 +310,7 @@ pub fn run(config: &Config, frame_fd: RawFd) -> Result<()> {
     let mut output = std::io::stdout().lock();
     let mut engine = None;
     while let Some(meta) = read_packet(&mut input, 2048)? {
-        let result = (|| -> Result<(Vec<u8>, Value)> {
+        let result = (|| -> Result<Vec<(Vec<u8>, Value)>> {
             let meta: Value = serde_json::from_slice(&meta)?;
             let length = meta["length"]
                 .as_u64()
@@ -300,6 +320,7 @@ pub fn run(config: &Config, frame_fd: RawFd) -> Result<()> {
             ensure!(quality <= 4, "Invalid quality");
             let scale = meta["scale"].as_f64().context("Invalid scale")?;
             let reset = meta["reset"].as_bool().context("Invalid stream reset")?;
+            let generation = Generation::parse(&meta["generate"])?;
             crate::config::validate_settings(quality as u32, scale)?;
             crate::protocol::Frame::parse(bytes)?;
             if engine.is_none() {
@@ -308,17 +329,21 @@ pub fn run(config: &Config, frame_fd: RawFd) -> Result<()> {
             engine
                 .as_mut()
                 .unwrap()
-                .process(bytes, quality as u32, scale, reset)
+                .process(bytes, quality as u32, scale, reset, generation)
         })();
-        let (bytes, meta) = match result {
+        let pictures = match result {
             Ok(result) => result,
             Err(error) => {
                 engine = None;
-                (vec![], json!({"error":format!("{error:#}")}))
+                vec![(vec![], json!({"error":format!("{error:#}")}))]
             }
         };
-        write_packet(&mut output, &serde_json::to_vec(&meta)?)?;
-        write_packet(&mut output, &bytes)?;
+        let count = pictures.len();
+        for (index, (bytes, mut meta)) in pictures.into_iter().enumerate() {
+            meta["more"] = json!(index + 1 < count);
+            write_packet(&mut output, &serde_json::to_vec(&meta)?)?;
+            write_packet(&mut output, &bytes)?;
+        }
         output.flush()?;
     }
     Ok(())

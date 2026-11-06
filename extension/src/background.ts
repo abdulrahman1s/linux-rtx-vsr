@@ -249,6 +249,9 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
       config.quality = message.quality as Settings['quality'];
     if ([720, 1080, 1440, 2160, 4320].includes(message.target ?? 0))
       config.target = message.target as Settings['target'];
+    if (typeof message.frameGeneration === 'boolean')
+      config.frameGeneration = message.frameGeneration;
+    if (typeof message.splitView === 'boolean') config.splitView = message.splitView;
     await chrome.storage.local.set({ settings: config });
     await notifyTabs();
     return {};

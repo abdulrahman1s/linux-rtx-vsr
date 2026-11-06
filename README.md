@@ -73,6 +73,11 @@ Already have a licensed SDK? [Configure its path instead](docs/runtime.md#use-an
 
 The backend starts on demand. The **`ON` badge** means fresh enhanced frames are being displayed. The popup explains errors and shows source/output sizes and performance. Choose an **Output target** of 720p, 1080p, 1440p, 4K (default), or experimental 8K. Aspect ratio is preserved; videos already at or above the target keep their original picture.
 
+Two popup toggles, both off by default:
+
+- **Frame generation** uses NVIDIA VideoFrameGeneration from the same runtime to add AI-interpolated frames between enhanced frames, up to the display rate (at most 120 fps, four frames per source frame): a 24 or 30 fps video plays at 48 or 60 fps on a 60 Hz display. Toggling it restarts enhancement. It adds about one source frame of latency, which audio synchronization absorbs, and about 3 ms of GPU time per generated 4K frame on an RTX 5090.
+- **Split view** shows the original video left of a draggable divider and the enhanced picture on the right, to compare quality in real time. It switches without restarting.
+
 Keep the installed executable and exported extension at their installed paths. You can delete the extracted release directory after setup. Branded browsers may use their standard native messaging location even with a custom `--user-data-dir`; the popup's backend check confirms whether integration works. For custom registration paths, see `linux-rtx-vsr integration install --help`.
 
 ## Compatibility

@@ -236,9 +236,15 @@ try {
   }
   // Small lifecycle fixture uses 720p; performance runs explicitly select 4K.
   const target = Number(process.env.VSR_TEST_TARGET || 720);
-  await worker.evaluate(async (target) => {
-    await chrome.storage.local.set({ settings: { enabled: true, sites: {}, quality: 3, target } });
-  }, target);
+  // GPU-only playback options: VideoFrameGeneration and the original/enhanced split.
+  const frameGeneration = process.env.VSR_FRAME_GENERATION === '1',
+    splitView = process.env.VSR_SPLIT_VIEW === '1';
+  await worker.evaluate(
+    async (settings) => {
+      await chrome.storage.local.set({ settings: { enabled: true, sites: {}, ...settings } });
+    },
+    { quality: 3, target, frameGeneration, splitView },
+  );
   // A branded browser's startup DevTools target may not be a registered tab.
   // Create an owned tab explicitly instead of treating pages()[0] as one.
   const page = await context.newPage();
@@ -333,6 +339,20 @@ try {
       await page.locator('.player iframe').evaluate((e) => getComputedStyle(e).pointerEvents),
       'none',
     );
+    if (frameGeneration) {
+      const generated = await waitState((v) => (v?.generated ?? 0) > 0, 5000);
+      console.log(
+        'Generated pictures presented:',
+        generated?.generated,
+        'of',
+        generated?.presented,
+      );
+    }
+    if (splitView) {
+      const clip = await page.locator('.player iframe').evaluate((e) => e.style.clipPath);
+      assert.match(clip, /^inset\(0(px)? 0(px)? 0(px)? 50%\)$/);
+      await page.screenshot({ path: 'test-results/split-view.png' });
+    }
     if (process.env.VSR_MEASURE_SECONDS) {
       const duration = Math.min(60, Math.max(1, Number(process.env.VSR_MEASURE_SECONDS))) * 1000;
       const samples = [],

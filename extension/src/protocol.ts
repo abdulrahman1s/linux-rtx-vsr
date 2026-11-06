@@ -7,6 +7,10 @@ export interface Settings {
   sites: Record<string, boolean>;
   quality: Quality;
   target: TargetResolution;
+  // NVIDIA VideoFrameGeneration fills the display rate from slower sources.
+  frameGeneration: boolean;
+  // Original video on the left of a draggable divider, enhanced on the right.
+  splitView: boolean;
 }
 export interface TabOverride {
   origin: string;
@@ -29,6 +33,8 @@ export interface PlaybackStatus {
   inferenceMs?: number;
   dropped?: number;
   presented?: number;
+  // Presented pictures NVIDIA generated between captured frames.
+  generated?: number;
   latenessMs?: number;
   // Every Nth source frame is sent; missed counts due frames with no free slot.
   capture?: { stride: number; missed: number };
@@ -76,7 +82,14 @@ export type RuntimeRequest =
   | { type: 'claim'; grant: string }
   | { type: 'snapshot'; tabId: number }
   | { type: 'manual' | 'automatic'; tabId: number; enabled: boolean }
-  | { type: 'settings'; enabled?: boolean; quality?: number; target?: number }
+  | {
+      type: 'settings';
+      enabled?: boolean;
+      quality?: number;
+      target?: number;
+      frameGeneration?: boolean;
+      splitView?: boolean;
+    }
   | { type: 'reset-override'; tabId: number }
   | { type: 'backend' };
 export type RuntimeReply<T extends RuntimeRequest> = T extends { type: 'policy' }
@@ -113,6 +126,11 @@ export interface FrameMetadata extends FrameTimings {
   codec: string;
   color_space: 'srgb' | 'bt709';
   keyframe: boolean;
+  // Interpolated between the previous and this capture; absent from older engines.
+  generated?: boolean;
+  generation_ms?: number;
+  // On a captured picture: how many generated pictures preceded it.
+  generated_frames?: number;
 }
 export type CaptureMessage =
   | ClockMessage
@@ -135,6 +153,7 @@ export type FrameMessage =
       presentedAt: number;
       epoch: number;
       presented: number;
+      generated: number;
       dropped: number;
       fps: number;
       latenessMs: number;
@@ -151,4 +170,11 @@ export interface WorkerInit {
   auth: Authorization;
   quality: Quality;
   scale: number;
+  generate?: Generation;
+}
+// Mirrors src/protocol.rs Generation: output frames per capture at most, and
+// the shortest useful media-time spacing (display refresh × playback rate).
+export interface Generation {
+  max: number;
+  interval: number;
 }

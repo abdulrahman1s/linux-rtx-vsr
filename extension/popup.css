@@ -182,6 +182,14 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Playback options below the quality/target pickers. */
+.site.option {
+  margin: 14px 0 0;
+  padding: 0 0 14px;
+}
+.settings + .option {
+  margin-top: 18px;
+}
 input[type='checkbox'] {
   accent-color: var(--blue);
   width: 17px;

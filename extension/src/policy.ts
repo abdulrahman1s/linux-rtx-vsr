@@ -8,6 +8,8 @@ export const DEFAULTS: Readonly<Settings> = Object.freeze({
   }),
   quality: 3,
   target: 2160,
+  frameGeneration: false,
+  splitView: false,
 });
 export function settingsWithDefaults(saved?: Partial<Settings>): Settings {
   return { ...DEFAULTS, ...saved, sites: { ...DEFAULTS.sites, ...saved?.sites } };

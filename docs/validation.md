@@ -199,3 +199,25 @@ Brave 155 already captured native NV12 and presented about 18 (baseline) and 20 
 Native transport (`measure-transport.ts`, 1080p NV12 → 4K, window 4, two runs each): **234 → 260 completions/s**, round-trip p50 16.8 → 15.1 ms, from overlapping frame reading, GPU work and result sending.
 
 Both ignored GPU units passed, including format 4: decoded RGB stayed within 5/255 with an sRGB transfer tag, and its AV1 inference output decoded to a clean ramp. Locked Clippy, Rust units and lifecycle, all Bun tests and the CPU browser test passed. The isolated 360p→720p GPU lifecycle run passed startup, pause/resume, long-pause hold and idle VRAM release, then stopped at the embedded-player step with "Another tab is enhancing" — identically for the baseline, because the kiosk compositor keeps the first fixture tab visible. That step, the colour-bar screenshot test and physical A/V sync were not verified in this change.
+
+## Frame generation and split view — 2026-11-06
+
+RTX 5090, driver 595.112.07, pinned `nvidia-vfx` 0.2.0.0 (`VideoFrameGeneration 1.3.0.0`). Browser runs used Chromium 148 in a private headless cage session (1920×1080 virtual output at 60 Hz), never the desktop session.
+
+Native `VideoFrameGeneration` per generated frame, 60 warm runs: 1080p low/medium/high 0.36/1.22/6.49 ms p50; 4K 0.69/1.40/7.28 ms p50. Medium is used.
+
+`benchmark --frames 300 --width 1920 --height 1080 --target 2160`, warm p50 per input frame including NV12 conversion and AV1 encoding: 3.70 ms without generation, 6.94 ms with `--frame-generation 2` (599 output frames), 13.36 ms with `--frame-generation 4` (1197 output frames).
+
+`cargo test nvidia_frame_generation -- --ignored` passed: a moving bar's generated pictures decode at the expected in-between positions (bar at 48 px between captured frames at 32 and 64 px, ×2 output). The first generated picture of a stream was slightly blurred at the bar edge.
+
+Browser, 1080p 30 fps fixture → 4K, `VSR_FIXTURE_FPS=30`, 15 s measurement after startup:
+
+|                                                       | Presented/s | Generated/s | Dropped/s | Audio delay |
+| ----------------------------------------------------- | ----------- | ----------- | --------- | ----------- |
+| Generation off                                        | 27.6        | 0           | 0.67      | 14 ms       |
+| Generation on, whole window (4 runs)                  | 36–52       | 18–26       | 1.2–9.8   | 30–33 ms    |
+| Generation on, after the audio delay settles (3 runs) | 54–55       | 27–28       | 4.3–4.8   | 30–33 ms    |
+
+The remaining drops are mostly generated pictures decoded a few milliseconds after their refresh: they arrive with the following capture, so their age includes part of a source interval, and the audio delay rises toward the needed value at its deliberate 0.5% slew limit (about 7 s from startup). Audio delay now follows the age of the generated pictures, which removed a further share of drops. One 15 s run showed only 36 presented/s with 1.2 drops/s; host load was not controlled.
+
+`VSR_SPLIT_VIEW=1` confirmed `clip-path: inset(0 0 0 50%)` on the overlay and wrote a screenshot with the original on the left and the enhanced picture on the right, divider and labels visible. Dragging the handle and the time offset between halves during motion were not measured. Physical A/V sync with generation was not measured. The browser runs ended at the existing embedded-player step, which fails the same way without these changes.

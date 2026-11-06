@@ -2,8 +2,11 @@ import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createPacketDecoder } from '../extension/src/video-decoder.ts';
 import type { FrameMetadata } from '../extension/src/protocol.ts';
+import { MAX_GENERATION, MAX_IN_FLIGHT } from '../extension/src/frame-budget.ts';
+// Every in-flight capture may return generated pictures too.
+const BOUND = MAX_IN_FLIGHT * MAX_GENERATION;
 
-test('decoder accepts four overlapping packets, bounds the fifth and cancels pending outputs', async () => {
+test('decoder accepts a bounded number of overlapping packets and cancels pending outputs', async () => {
   const originalDecoder = globalThis.VideoDecoder;
   const originalChunk = globalThis.EncodedVideoChunk;
   const chunks: EncodedVideoChunkInit[] = [];
@@ -54,12 +57,12 @@ test('decoder accepts four overlapping packets, bounds the fifth and cancels pen
       decoder.decode(new ArrayBuffer(4), { ...meta, keyframe: false }),
       /start with a keyframe/,
     );
-    const pending = Array.from({ length: 4 }, (_, index) =>
+    const pending = Array.from({ length: BOUND }, (_, index) =>
       decoder.decode(new ArrayBuffer(4), { ...meta, keyframe: index === 0 }),
     );
     const results = Promise.allSettled(pending);
     await Bun.sleep(0);
-    assert.equal(submitted, 4);
+    assert.equal(submitted, BOUND);
     assert.deepEqual(configurations[0].colorSpace, {
       primaries: 'bt709',
       transfer: 'iec61966-2-1',
@@ -68,7 +71,7 @@ test('decoder accepts four overlapping packets, bounds the fifth and cancels pen
     });
     assert.deepEqual(
       chunks.map((chunk) => chunk.type),
-      ['key', 'delta', 'delta', 'delta'],
+      ['key', ...Array(BOUND - 1).fill('delta')],
     );
     await assert.rejects(decoder.decode(new ArrayBuffer(4), meta), /bounded queue/);
     // A transfer change creates a new prediction chain even if the old

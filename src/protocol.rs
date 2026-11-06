@@ -73,9 +73,88 @@ impl Frame {
         Ok((w, h))
     }
 }
+// Frame generation: NVIDIA VideoFrameGeneration interpolates between
+// consecutive enhanced frames so the source rate approaches the display rate.
+pub const MAX_GENERATION: u32 = 4;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Generation {
+    // Output frames per captured frame at most; 1 disables generation.
+    pub max: u32,
+    // Shortest useful media-time spacing between output frames in seconds:
+    // the display refresh period times the playback rate.
+    pub interval: f64,
+}
+impl Generation {
+    pub const OFF: Self = Self {
+        max: 1,
+        interval: 1.,
+    };
+    pub fn parse(value: &serde_json::Value) -> Result<Self> {
+        if value.is_null() {
+            return Ok(Self::OFF);
+        }
+        let max = value["max"].as_u64().unwrap_or(0);
+        let interval = value["interval"].as_f64().unwrap_or(f64::NAN);
+        ensure!(
+            (1..=u64::from(MAX_GENERATION)).contains(&max)
+                && interval.is_finite()
+                && (0.001..=1.).contains(&interval),
+            "Invalid frame generation settings"
+        );
+        Ok(Self {
+            max: max as u32,
+            interval,
+        })
+    }
+    pub fn to_json(self) -> serde_json::Value {
+        serde_json::json!({"max":self.max,"interval":self.interval})
+    }
+    // Output frames for a captured gap: the most that still lands at least one
+    // display refresh apart. A 10% allowance keeps 30 fps on a 60 Hz display
+    // at two despite timestamp rounding. Seeks, loops and stalls generate none.
+    pub fn count(self, gap: f64) -> u32 {
+        if self.max < 2 || !(gap > 0. && gap <= 0.25) {
+            return 1;
+        }
+        ((gap / self.interval * 1.1).floor() as u32).clamp(1, self.max)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generation_fills_the_display_rate_without_exceeding_it() {
+        let at = |hz: f64, max| Generation {
+            max,
+            interval: 1. / hz,
+        };
+        assert_eq!(at(60., 4).count(1. / 30.), 2);
+        assert_eq!(at(60., 4).count(1. / 24.), 2);
+        assert_eq!(at(60., 4).count(1. / 60.), 1);
+        assert_eq!(at(60., 4).count(1. / 50.), 1);
+        assert_eq!(at(144., 4).count(1. / 60.), 2);
+        assert_eq!(at(144., 4).count(1. / 24.), 4);
+        assert_eq!(at(144., 2).count(1. / 24.), 2);
+        assert_eq!(Generation::OFF.count(1. / 24.), 1);
+        for gap in [0., -0.01, 0.3, f64::NAN] {
+            assert_eq!(at(144., 4).count(gap), 1);
+        }
+        assert_eq!(
+            Generation::parse(&serde_json::Value::Null).unwrap(),
+            Generation::OFF
+        );
+        let parsed = Generation::parse(&serde_json::json!({"max":2,"interval":0.0167})).unwrap();
+        assert_eq!(parsed.max, 2);
+        for bad in [
+            serde_json::json!({"max":5,"interval":0.01}),
+            serde_json::json!({"max":0,"interval":0.01}),
+            serde_json::json!({"max":2,"interval":0}),
+            serde_json::json!({"max":2}),
+            serde_json::json!(true),
+        ] {
+            assert!(Generation::parse(&bad).is_err(), "{bad}");
+        }
+    }
     #[test]
     fn target_scales_align_and_bound_8k_landscape_and_portrait() {
         let mut frame = Frame {

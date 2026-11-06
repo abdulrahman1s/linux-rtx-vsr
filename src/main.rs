@@ -65,6 +65,9 @@ enum Commands {
         target: Option<String>,
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Also generate in-between frames: 2–4 output frames per input frame.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(2..=4))]
+        frame_generation: Option<u32>,
     },
     #[command(hide = true)]
     Daemon,
@@ -149,6 +152,7 @@ fn run() -> Result<()> {
             height,
             target,
             output,
+            frame_generation,
         } => benchmark(
             &paths,
             frames,
@@ -156,6 +160,7 @@ fn run() -> Result<()> {
             height,
             target.as_deref().map(str::parse).transpose()?,
             output.as_deref(),
+            frame_generation.unwrap_or(1),
         )?,
     }
     Ok(())
@@ -450,7 +455,7 @@ fn doctor(paths: &Paths, gpu: bool) -> Result<()> {
     );
     if gpu {
         println!("Running real cold-start NVIDIA inference (not a substitute scaler)...");
-        benchmark(paths, 3, 640, 360, None, None)?;
+        benchmark(paths, 3, 640, 360, None, None, 1)?;
     }
     ensure!(
         failures == 0,
@@ -465,6 +470,7 @@ fn benchmark(
     height: u32,
     target: Option<u32>,
     output: Option<&Path>,
+    multiplier: u32,
 ) -> Result<()> {
     ensure!((1..=10000).contains(&frames), "frames must be 1–10000");
     ensure!(
@@ -507,20 +513,29 @@ fn benchmark(
     let mut encoded_output = output.map(fs::File::create).transpose()?;
     let mut first_ms = 0.;
     let mut total_bytes = 0;
+    let mut pictures = 0;
+    // Inputs are 1/60 s apart; a display M times faster fits M frames each.
+    let generation = protocol::Generation {
+        max: multiplier,
+        interval: 1. / 60. / f64::from(multiplier),
+    };
     for n in 0..frames {
         bytes[16..20].copy_from_slice(&n.to_le_bytes());
         bytes[24..32].copy_from_slice(&(n as f64 / 60.).to_le_bytes());
         let at = Instant::now();
-        let (b, _) = engine.process(&bytes, config.quality, scale, n == 0)?;
+        let encoded = engine.process(&bytes, config.quality, scale, n == 0, generation)?;
         let ms = at.elapsed().as_secs_f64() * 1000.;
         if n == 0 {
             first_ms = ms;
         } else {
             times.push(ms);
         }
-        total_bytes += b.len();
-        if let Some(file) = &mut encoded_output {
-            file.write_all(&b)?;
+        for (b, _) in encoded {
+            pictures += 1;
+            total_bytes += b.len();
+            if let Some(file) = &mut encoded_output {
+                file.write_all(&b)?;
+            }
         }
     }
     let seconds = start.elapsed().as_secs_f64();
@@ -533,7 +548,7 @@ fn benchmark(
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"version":env!("CARGO_PKG_VERSION"),"source":[width,height],"scale":scale,"target":target,"quality":config.quality,"encode_qp":config.encode_qp,"format":"av1","frames":frames,"runtime_load_ms":load_ms,"first_frame_ms":first_ms,"warm_p50_ms":p(0.5),"warm_p95_ms":p(0.95),"overall_fps":frames as f64/seconds,"mean_output_bytes":total_bytes/frames as usize,"transport":"direct Rust SDK benchmark; excludes browser capture, transport, presentation and audio"})
+            &json!({"version":env!("CARGO_PKG_VERSION"),"source":[width,height],"scale":scale,"target":target,"quality":config.quality,"encode_qp":config.encode_qp,"format":"av1","frames":frames,"frame_generation":multiplier,"output_frames":pictures,"runtime_load_ms":load_ms,"first_frame_ms":first_ms,"warm_p50_ms":p(0.5),"warm_p95_ms":p(0.95),"overall_fps":frames as f64/seconds,"mean_output_bytes":total_bytes/pictures,"transport":"direct Rust SDK benchmark; excludes browser capture, transport, presentation and audio"})
         )?
     );
     Ok(())

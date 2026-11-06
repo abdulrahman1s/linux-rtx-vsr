@@ -1,6 +1,6 @@
 use crate::{
     config::{Config, Paths, atomic_write},
-    protocol::MAX_FRAME,
+    protocol::{Generation, MAX_FRAME},
     worker::GpuProcess,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -169,12 +169,13 @@ pub fn stop(paths: &Paths) -> Result<()> {
     }
     bail!("Backend is still finishing a GPU call; retry stop after it completes")
 }
-type Reply = Result<(Vec<u8>, Value)>;
+type Reply = Result<Vec<(Vec<u8>, Value)>>;
 struct Job {
     bytes: Bytes,
     quality: u32,
     scale: f64,
     reset: bool,
+    generation: Generation,
     reply: mpsc::SyncSender<Reply>,
 }
 pub fn run(paths: Paths, config: Config) -> Result<()> {
@@ -224,6 +225,7 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
                             job.quality,
                             job.scale,
                             job.reset,
+                            job.generation,
                         )
                     })();
                     if result.is_err() {
@@ -440,6 +442,8 @@ fn stream(
     let quality = quality as u32;
     let scale = auth["scale"].as_f64().context("Missing scale")?;
     crate::config::validate_settings(quality, scale)?;
+    // Optional: an older extension omits it and gets one picture per capture.
+    let generation = Generation::parse(&auth["generate"])?;
     let ended = Arc::new(AtomicBool::new(false));
     // Browsers bound WebSocket upload per worker thread (~127 MB/s measured),
     // below 1080p60 NV12. The extension can spread frames round-robin over
@@ -493,6 +497,7 @@ fn stream(
                 &outgoing,
                 quality,
                 scale,
+                generation,
             )
         } else {
             // The primary socket now only signals the end of the session.
@@ -508,6 +513,7 @@ fn stream(
                 &outgoing,
                 quality,
                 scale,
+                generation,
             );
             ended.store(true, Ordering::Relaxed);
             read.and(
@@ -546,6 +552,7 @@ fn read_frames(
     outgoing: &mpsc::SyncSender<Outgoing>,
     quality: u32,
     scale: f64,
+    generation: Generation,
 ) -> Result<()> {
     // A decoder belongs to one connection, while the GPU process survives short
     // pauses/seeks. Every new connection must start a fresh prediction chain.
@@ -568,6 +575,7 @@ fn read_frames(
             quality,
             scale,
             reset: first_frame,
+            generation,
             reply,
         };
         first_frame = false;
@@ -732,13 +740,17 @@ fn send_results(
             }
         };
         match reply.recv_timeout(Duration::from_secs(30))? {
-            Ok((bytes, mut stats)) => {
-                stats["response_bytes"] = json!(bytes.len());
-                stats["received_wall_ms"] = json!(received_wall_ms);
-                stats["dispatch_ms"] = json!(dispatch_at.elapsed().as_secs_f64() * 1000.);
-                stats["completed_wall_ms"] = json!(wall_ms()?);
-                ws.send(Message::text(stats.to_string()))?;
-                ws.send(Message::Binary(bytes.into()))?;
+            // Generated pictures first; the extension frees the capture slot
+            // only on the final, captured picture.
+            Ok(pictures) => {
+                for (bytes, mut stats) in pictures {
+                    stats["response_bytes"] = json!(bytes.len());
+                    stats["received_wall_ms"] = json!(received_wall_ms);
+                    stats["dispatch_ms"] = json!(dispatch_at.elapsed().as_secs_f64() * 1000.);
+                    stats["completed_wall_ms"] = json!(wall_ms()?);
+                    ws.send(Message::text(stats.to_string()))?;
+                    ws.send(Message::Binary(bytes.into()))?;
+                }
             }
             Err(e) => {
                 error(ws, format!("{e:#}"))?;

@@ -1,5 +1,5 @@
 import type { FrameMetadata } from './protocol.ts';
-import { MAX_IN_FLIGHT } from './frame-budget.ts';
+import { MAX_IN_FLIGHT, MAX_GENERATION } from './frame-budget.ts';
 // Owns codec negotiation, pending output and shutdown. VideoFrames remain in
 // the decoding/presentation worker; no ImageBitmap conversion or pixel readback.
 export interface PacketDecoder {
@@ -82,7 +82,9 @@ export function createPacketDecoder(): PacketDecoder {
       if (closed) throw new Error('Video decoder is closed');
       if (needsKeyframe && !meta.keyframe)
         throw new Error('AV1 stream must start with a keyframe; enable enhancement again');
-      if (pending.size >= MAX_IN_FLIGHT) throw new Error('AV1 decoder exceeded its bounded queue');
+      // Each in-flight capture can return generated pictures as well.
+      if (pending.size >= MAX_IN_FLIGHT * MAX_GENERATION)
+        throw new Error('AV1 decoder exceeded its bounded queue');
       const timestamp = ++sequence;
       return new Promise<VideoFrame>((resolve, reject) => {
         pending.set(timestamp, { resolve, reject });
