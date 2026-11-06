@@ -36,6 +36,10 @@ test('target output computes source-dependent scale and preserves portrait bound
   assert.equal(cinema.width, 2560);
   assert.equal(cinema.height, 1064);
   assert.equal(cinema.bypass, false);
+  // 480p YouTube: floating-point scale must not drop the last 8-pixel block.
+  assert.equal(planOutput(854, 480, 1080).width, 1920);
+  assert.equal(planOutput(854, 480, 2160).width, 3840);
+  assert.equal(planOutput(854, 480, 4320).width, 7680);
   assert.equal(planOutput(1920, 1080, 1080).bypass, true);
   assert.equal(planOutput(3840, 2160, 1440).bypass, true);
   for (const width of [NaN, Infinity, 0, 32]) assert.throws(() => planOutput(width, 1080, 2160));

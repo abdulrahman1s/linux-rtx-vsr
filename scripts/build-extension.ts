@@ -12,7 +12,14 @@ export async function buildExtension(outdir = 'build/extension') {
         recursive: true,
       });
   }
-  for (const entry of ['background', 'content', 'bridge', 'frame-worker', 'popup']) {
+  for (const entry of [
+    'background',
+    'content',
+    'bridge',
+    'frame-worker',
+    'uplink-worker',
+    'popup',
+  ]) {
     const result = await Bun.build({
       entrypoints: [`extension/src/${entry}.ts`],
       outdir,

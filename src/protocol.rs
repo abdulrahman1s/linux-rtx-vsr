@@ -42,7 +42,7 @@ impl Frame {
         let pixels = (f.width as usize) * (f.height as usize);
         let size = match f.format {
             0 => pixels * 4,
-            1..=3 => {
+            1..=4 => {
                 ensure!(
                     f.width.is_multiple_of(2) && f.height.is_multiple_of(2),
                     "NV12 dimensions must be even"
@@ -62,8 +62,10 @@ impl Frame {
             scale.is_finite() && (1.0..=120.0).contains(&scale),
             "Invalid output scale"
         );
-        let w = ((self.width as f64 * scale / 8.).floor() as u32) * 8;
-        let h = ((self.height as f64 * scale / 8.).floor() as u32) * 8;
+        // Target-derived scales such as 3840 / 854 multiply back to
+        // 3839.999…; tolerate that rounding instead of losing an 8-pixel block.
+        let align = |n: u32| ((n as f64 * scale / 8. + 1e-6).floor() as u32) * 8;
+        let (w, h) = (align(self.width), align(self.height));
         ensure!(
             w <= 7680 && h <= 7680 && u64::from(w) * u64::from(h) <= 7680 * 4320,
             "Output exceeds an 8K landscape/portrait frame; lower the target resolution"
@@ -94,6 +96,11 @@ mod tests {
         frame.width = 1920;
         frame.height = 800;
         assert_eq!(frame.output(2560. / 1920.).unwrap(), (2560, 1064));
+        frame.width = 854;
+        frame.height = 480;
+        assert_eq!(frame.output(3840. / 854.).unwrap(), (3840, 2152));
+        assert_eq!(frame.output(1920. / 854.).unwrap(), (1920, 1072));
+        assert_eq!(frame.output(7680. / 854.).unwrap(), (7680, 4312));
     }
     #[test]
     fn rejects_malformed_and_unbounded_frames() {

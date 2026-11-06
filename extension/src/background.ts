@@ -34,24 +34,40 @@ async function attach(tab: chrome.tabs.Tab) {
     await inject(tab.id);
   }
 }
+// Content frames report several times per second. Skip identical badge/title
+// updates; navigation clears the entry because it resets tab-specific actions.
+const shown = new Map<number, string>();
+// Last state written to session storage per tab; cleared wherever another
+// path writes or removes that key.
+const stored = new Map<number, string>();
 async function show(tabId: number, value?: PlaybackStatus) {
   const state = freshState(value),
-    style = STATES[state.state] || STATES.error;
-  await chrome.action.setBadgeText({ tabId, text: style.badge });
-  await chrome.action.setBadgeBackgroundColor({ tabId, color: style.color });
-  await chrome.action.setTitle({
-    tabId,
-    title: `Linux RTX VSR — ${style.label}: ${state.message || ''}`,
-  });
+    style = STATES[state.state] || STATES.error,
+    title = `Linux RTX VSR — ${style.label}: ${state.message || ''}`,
+    key = `${style.badge}\n${style.color}\n${title}`;
+  if (shown.get(tabId) === key) return;
+  shown.set(tabId, key);
+  try {
+    await Promise.all([
+      chrome.action.setBadgeText({ tabId, text: style.badge }),
+      chrome.action.setBadgeBackgroundColor({ tabId, color: style.color }),
+      chrome.action.setTitle({ tabId, title }),
+    ]);
+  } catch (error) {
+    shown.delete(tabId);
+    throw error;
+  }
 }
 async function notifyTabs() {
-  for (const tab of await chrome.tabs.query({})) {
-    if (!tab.id) continue;
-    await attach(tab).catch(() => {});
-    chrome.tabs.sendMessage(tab.id!, { type: 'policy-changed' }).catch(() => {});
-    if (!(await settings()).enabled)
-      await show(tab.id!, { state: 'disabled', message: 'Globally disabled' });
-  }
+  const enabled = (await settings()).enabled;
+  await Promise.allSettled(
+    (await chrome.tabs.query({})).map(async (tab) => {
+      if (!tab.id) return;
+      await attach(tab).catch(() => {});
+      chrome.tabs.sendMessage(tab.id, { type: 'policy-changed' }).catch(() => {});
+      if (!enabled) await show(tab.id, { state: 'disabled', message: 'Globally disabled' });
+    }),
+  );
 }
 let siteSync: Promise<void> = Promise.resolve();
 function syncSites() {
@@ -119,7 +135,13 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
     const frames = frameStates.get(sender.tab!.id!) || new FrameStates();
     frameStates.set(sender.tab!.id!, frames);
     value = frames.update(sender.frameId!, value);
-    await chrome.storage.session.set({ [`state:${sender.tab!.id!}`]: value });
+    // Every frame heartbeats at 4 Hz so removed frames expire; most reports
+    // repeat the stored state and need no storage write.
+    const serialized = JSON.stringify(value);
+    if (stored.get(sender.tab!.id!) !== serialized) {
+      await chrome.storage.session.set({ [`state:${sender.tab!.id!}`]: value });
+      stored.set(sender.tab!.id!, serialized);
+    }
     await show(sender.tab!.id!, value);
     clearTimeout(freshnessTimers.get(sender.tab!.id!));
     if (value.state === 'active')
@@ -167,6 +189,7 @@ async function route(message: RuntimeRequest, sender: chrome.runtime.MessageSend
           state: 'error',
           message: `Cannot attach to this page: ${errorMessage(error)}. Allow site access in the extension menu, then refresh this tab.`,
         };
+        stored.delete(tab.id!);
         await chrome.storage.session.set({ [`state:${tab.id}`]: state });
       }
     }
@@ -249,6 +272,8 @@ chrome.permissions.onRemoved.addListener(() => syncSites().catch(console.error))
 chrome.permissions.onAdded.addListener(() => syncSites().catch(console.error));
 chrome.tabs.onRemoved.addListener((tabId) => {
   frameStates.delete(tabId);
+  shown.delete(tabId);
+  stored.delete(tabId);
   clearTimeout(freshnessTimers.get(tabId));
   freshnessTimers.delete(tabId);
   chrome.storage.session.remove([`override:${tabId}`, `state:${tabId}`]);
@@ -256,6 +281,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   if (change.status === 'loading') {
     frameStates.delete(tabId);
+    shown.delete(tabId);
+    stored.delete(tabId);
     chrome.storage.session.remove(`state:${tabId}`);
     const wanted = (await policy(tabId, tab.url)).wanted;
     show(tabId, {

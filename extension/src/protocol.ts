@@ -30,6 +30,8 @@ export interface PlaybackStatus {
   dropped?: number;
   presented?: number;
   latenessMs?: number;
+  // Every Nth source frame is sent; missed counts due frames with no free slot.
+  capture?: { stride: number; missed: number };
   startupMs?: number;
   audio?: object;
   timings?: FrameTimings;
@@ -127,7 +129,6 @@ export type FrameMessage =
   | { type: 'ready' | 'available' }
   | { type: 'error'; message: string; retryable?: boolean }
   | { type: 'stale'; message: string }
-  | { type: 'recycle'; buffer: ArrayBuffer }
   | { type: 'decoded'; ageMs: number }
   | {
       type: 'presented';
@@ -140,6 +141,9 @@ export type FrameMessage =
       stats: FrameMetadata;
       startupMs: number;
     };
+export type UplinkMessage =
+  | { type: 'open'; url: string; hello: { uplink: string; index: number } }
+  | { type: 'frame'; buffer: ArrayBuffer };
 export interface WorkerInit {
   type: 'init';
   port: MessagePort;

@@ -145,8 +145,8 @@ fn backend_lifecycle_origin_security_and_idle_exit() {
     // A short capture stall must not close the authorized stream. No GPU
     // work is needed to distinguish recovery from a dead socket.
     thread::sleep(Duration::from_secs(4));
-    // A malformed frame reaches the real Rust GPU subprocess but is rejected
-    // before loading NVIDIA libraries. Ordinary CI verifies worker recovery.
+    // The daemon rejects a malformed frame before dispatch, so it can neither
+    // load NVIDIA libraries nor restart a warm GPU subprocess.
     ws.send(tungstenite::Message::Binary(vec![1, 2, 3].into()))
         .unwrap();
     assert!(
@@ -178,4 +178,63 @@ fn backend_lifecycle_origin_security_and_idle_exit() {
         !root.join("state/linux-rtx-vsr/control.sock").exists(),
         "Idle daemon must exit even while status is polled"
     );
+}
+#[test]
+fn uplinks_join_only_their_session_in_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    assert!(cli(root, &["start"]).status.success());
+    let endpoint: Value = serde_json::from_slice(
+        &std::fs::read(root.join("state/linux-rtx-vsr/endpoint.json")).unwrap(),
+    )
+    .unwrap();
+    let mut socket = UnixStream::connect(root.join("state/linux-rtx-vsr/control.sock")).unwrap();
+    writeln!(socket, "{}", json!({"op":"grant"})).unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).unwrap();
+    let grant: Value = serde_json::from_str(&response).unwrap();
+    use tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://127.0.0.1:{}/v1/stream", endpoint["port"])
+        .into_client_request()
+        .unwrap();
+    req.headers_mut().insert(
+        "Origin",
+        "chrome-extension://pdobgdmlfcnimbnndkchfocncchfoadm"
+            .parse()
+            .unwrap(),
+    );
+    let join = |hello: Value| {
+        let (mut ws, _) = tungstenite::connect(req.clone()).unwrap();
+        ws.send(tungstenite::Message::text(hello.to_string()))
+            .unwrap();
+        ws
+    };
+    let mut primary =
+        join(json!({"token":grant["token"],"quality":3,"scale":2,"protocol":3,"uplinks":2}));
+    let ready: Value = serde_json::from_str(primary.read().unwrap().to_text().unwrap()).unwrap();
+    let secret = ready["uplink"].as_str().unwrap().to_owned();
+    // Uplinks need the session's own secret, and each slot is claimed once.
+    assert!(join(json!({"uplink":"guess","index":0})).read().is_err());
+    let mut first = join(json!({"uplink":secret,"index":0}));
+    assert!(join(json!({"uplink":secret,"index":0})).read().is_err());
+    assert!(join(json!({"uplink":secret,"index":2})).read().is_err());
+    let _second = join(json!({"uplink":secret,"index":1}));
+    // Frames from an uplink reach the session's validation and its reply
+    // returns on the primary socket, without loading NVIDIA libraries.
+    first
+        .send(tungstenite::Message::Binary(vec![1, 2, 3].into()))
+        .unwrap();
+    assert!(
+        primary
+            .read()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .contains("Frame exceeds")
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli(root, &["status"]).stdout).unwrap()["gpu_loaded"],
+        false
+    );
+    assert!(cli(root, &["stop"]).status.success());
 }

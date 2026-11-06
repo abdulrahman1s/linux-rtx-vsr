@@ -277,7 +277,7 @@ impl Engine {
                     h,
                     (*self.encoded).pitch as u32,
                     self.config.encode_qp,
-                    i32::from(frame.format == 0),
+                    i32::from(srgb(frame.format)),
                     error.as_mut_ptr(),
                     error.len(),
                 );
@@ -402,14 +402,20 @@ impl Engine {
             let encode_ms = encode.elapsed().as_secs_f64() * 1000.;
             Ok((
                 bytes,
-                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"color_space":if frame.format == 0 { "srgb" } else { "bt709" },"keyframe":keyframe,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
+                serde_json::json!({"type":"frame","sequence":frame.sequence,"epoch":frame.epoch,"timestamp":frame.timestamp,"width":w,"height":h,"source_width":frame.width,"source_height":frame.height,"upload_ms":upload_ms,"encode_ms":encode_ms,"codec":codec,"color_space":if srgb(frame.format) { "srgb" } else { "bt709" },"keyframe":keyframe,"inference_ms":inference_ms,"configure_ms":configured,"service_ms":start.elapsed().as_secs_f64()*1000.,"engine":"NVIDIA VideoSuperRes","input_format":if frame.format == 0 { "rgba" } else { "nv12" },"input_bytes":data.len(),"format":"av1"}),
             ))
         }
     }
 }
+// Format 4 is NV12 that the extension produced from sRGB-encoded RGB with
+// the limited-range BT.709 matrix. It uploads exactly like format 1, but its
+// transfer stays sRGB, as for RGBA input; never relabel it as BT.709.
+fn srgb(format: u32) -> bool {
+    matches!(format, 0 | 4)
+}
 fn color(format: u32) -> u8 {
     match format {
-        1 => 1,
+        1 | 4 => 1,
         2 => 0,
         3 => 5,
         _ => 0,
@@ -442,7 +448,7 @@ mod tests {
         let mut engine = Engine::new(&config).unwrap();
         std::fs::create_dir_all("test-results").unwrap();
         let source = [187u8, 216, 12];
-        for format in 0u32..=3 {
+        for format in 0u32..=4 {
             let pixels = (w * h) as usize;
             let mut bytes = vec![
                 0u8;
@@ -534,7 +540,11 @@ mod tests {
             assert_eq!(color["color_range"], "tv");
             assert_eq!(
                 color["color_transfer"],
-                if format == 0 { "iec61966-2-1" } else { "bt709" }
+                if srgb(format) {
+                    "iec61966-2-1"
+                } else {
+                    "bt709"
+                }
             );
             eprintln!("Color format {format}: {rgb:?}, {color}");
         }
@@ -555,7 +565,7 @@ mod tests {
             }
         }
         let mut engine = Engine::new(&config).unwrap();
-        for format in 1u32..=3 {
+        for format in 1u32..=4 {
             bytes[12..16].copy_from_slice(&format.to_le_bytes());
             let (packet, stats) = engine.process(&bytes, 3, 2., true).unwrap();
             assert_eq!(stats["width"], 1280);

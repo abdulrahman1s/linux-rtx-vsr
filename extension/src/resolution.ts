@@ -13,9 +13,11 @@ export function planOutput(width: number, height: number, target: TargetResoluti
   const long = Math.round((target * 16) / 9);
   const [maxWidth, maxHeight] = width >= height ? [long, target] : [target, long];
   const scale = Math.min(maxWidth / width, maxHeight / height);
+  // Matches the native alignment: 854 × (3840 / 854) is 3839.999…, not 3832.
+  const align = (n: number) => Math.floor((n * scale) / 8 + 1e-6) * 8;
   return {
-    width: Math.floor((width * scale) / 8) * 8,
-    height: Math.floor((height * scale) / 8) * 8,
+    width: align(width),
+    height: align(height),
     scale,
     bypass: scale <= 1,
   };

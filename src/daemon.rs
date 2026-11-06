@@ -12,9 +12,12 @@ use std::{
     fs,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
-    os::unix::{
-        net::{UnixListener, UnixStream},
-        process::CommandExt,
+    os::{
+        fd::AsRawFd,
+        unix::{
+            net::{UnixListener, UnixStream},
+            process::CommandExt,
+        },
     },
     process::{Command, Stdio},
     sync::{
@@ -38,8 +41,14 @@ pub fn token() -> String {
     rand::thread_rng().fill_bytes(&mut b);
     b.iter().map(|v| format!("{v:02x}")).collect()
 }
+// Upload-only sockets a session still expects, by the secret it handed out.
+struct Uplinks {
+    senders: Vec<Option<mpsc::SyncSender<Bytes>>>,
+    ended: Arc<AtomicBool>,
+}
 struct Shared {
     grants: Mutex<HashMap<String, Instant>>,
+    uplinks: Mutex<HashMap<String, Uplinks>>,
     last: Mutex<Instant>,
     stop: AtomicBool,
     streaming: AtomicBool,
@@ -187,6 +196,7 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
     tcp.set_nonblocking(true)?;
     let shared = Arc::new(Shared {
         grants: Mutex::new(HashMap::new()),
+        uplinks: Mutex::new(HashMap::new()),
         last: Mutex::new(Instant::now()),
         stop: AtomicBool::new(false),
         streaming: AtomicBool::new(false),
@@ -256,13 +266,17 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
             }
         }
         if let Ok((socket, _)) = tcp.accept() {
-            if shared.connections.fetch_add(1, Ordering::Relaxed) < 8 {
+            // A session is a primary socket plus up to MAX_UPLINKS uploads;
+            // leave room for a restarting session to overlap the old one.
+            if shared.connections.fetch_add(1, Ordering::Relaxed) < 2 * (MAX_UPLINKS + 1) + 4 {
                 let shared = shared.clone();
                 let tx = tx.clone();
                 let origin = origin.clone();
                 thread::spawn(move || {
                     let _guard = Connection(shared.clone());
-                    if let Err(e) = stream(socket, &origin, shared, tx) {
+                    if let Err(e) = stream(socket, &origin, shared, tx)
+                        && !closed_by_peer(&e)
+                    {
                         eprintln!("Stream ended: {e:#}");
                     }
                 });
@@ -270,7 +284,15 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
                 shared.connections.fetch_sub(1, Ordering::Relaxed);
             }
         }
-        thread::sleep(Duration::from_millis(20));
+        // Wake as soon as either listener has a client instead of adding up to
+        // 20 ms to every grant/stream start; the timeout re-checks stop/idle.
+        let mut ready = [control.as_raw_fd(), tcp.as_raw_fd()].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        // SAFETY: two initialized pollfds for listeners that outlive the call.
+        unsafe { libc::poll(ready.as_mut_ptr(), ready.len() as libc::nfds_t, 100) };
     }
     shared.stop.store(true, Ordering::Relaxed);
     drop(control);
@@ -282,6 +304,20 @@ pub fn run(paths: Paths, config: Config) -> Result<()> {
     drop(tx);
     let _ = worker.join();
     Ok(())
+}
+// Removing the extension iframe terminates its worker without a closing
+// handshake. That is the normal end of a session, not a backend failure.
+fn closed_by_peer(error: &anyhow::Error) -> bool {
+    use tungstenite::error::{Error, ProtocolError};
+    match error.downcast_ref::<Error>() {
+        Some(Error::ConnectionClosed | Error::AlreadyClosed) => true,
+        Some(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => true,
+        Some(Error::Io(error)) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+        ),
+        _ => false,
+    }
 }
 struct Connection(Arc<Shared>);
 impl Drop for Connection {
@@ -360,6 +396,14 @@ fn stream(
     let auth = ws.read()?;
     ensure!(auth.len() <= 2048, "Authentication message too large");
     let auth: Value = serde_json::from_str(auth.to_text()?)?;
+    let frame_limits = |config: &mut WebSocketConfig| {
+        config.max_message_size = Some(MAX_FRAME);
+        config.max_frame_size = Some(MAX_FRAME);
+    };
+    if let Some(secret) = auth["uplink"].as_str() {
+        ws.set_config(frame_limits);
+        return uplink(ws, &shared, secret, auth["index"].as_u64());
+    }
     if auth["protocol"] != 3 {
         ws.send(Message::text(json!({"type":"error","message":"AV1 streaming requires matching application and extension versions; reload both"}).to_string()))?;
         return Ok(());
@@ -368,10 +412,7 @@ fn stream(
         shared.claim(auth["token"].as_str().unwrap_or("")),
         "Session authorization expired; enable enhancement again"
     );
-    ws.set_config(|config| {
-        config.max_message_size = Some(MAX_FRAME);
-        config.max_frame_size = Some(MAX_FRAME);
-    });
+    ws.set_config(frame_limits);
     // Removing an iframe closes its worker/socket asynchronously. Allow the
     // previous session to release its lease during rapid seek/fullscreen
     // restart, without taking over an active stream from another tab.
@@ -399,75 +440,310 @@ fn stream(
     let quality = quality as u32;
     let scale = auth["scale"].as_f64().context("Missing scale")?;
     crate::config::validate_settings(quality, scale)?;
+    let ended = Arc::new(AtomicBool::new(false));
+    // Browsers bound WebSocket upload per worker thread (~127 MB/s measured),
+    // below 1080p60 NV12. The extension can spread frames round-robin over
+    // upload-only sockets from separate workers; this session reads them back
+    // in that order and still sends every result over the primary socket.
+    let count = auth["uplinks"].as_u64().unwrap_or(0) as usize;
+    ensure!(count <= MAX_UPLINKS, "Invalid uplink count");
+    let (senders, receivers): (Vec<_>, Vec<_>) =
+        (0..count).map(|_| mpsc::sync_channel::<Bytes>(1)).unzip();
+    let secret = token();
+    if count > 0 {
+        shared.uplinks.lock().unwrap().insert(
+            secret.clone(),
+            Uplinks {
+                senders: senders.into_iter().map(Some).collect(),
+                ended: ended.clone(),
+            },
+        );
+    }
+    let _uplinks = UplinkLease(&shared, &secret, &ended);
     ws.send(Message::text(
-        json!({"type":"ready","protocol":3}).to_string(),
+        json!({"type":"ready","protocol":3,"uplink":(count > 0).then_some(&secret)}).to_string(),
     ))?;
+    // Overlap reading/validating the next capture, GPU work on the current one
+    // and sending the previous result. Serially these added several ms per
+    // frame and left too little headroom at 60 fps. From here this thread only
+    // reads; the writer owns every outgoing message on a cloned socket. The
+    // reader's tungstenite state writes only automatic ping/close replies.
+    let mut output = tungstenite::WebSocket::from_raw_socket(
+        ws.get_ref().try_clone()?,
+        tungstenite::protocol::Role::Server,
+        Some(ws_config),
+    );
+    let ended = &*ended;
+    // Bounded like the extension's in-flight window; a slow writer blocks
+    // reading instead of queueing raw frames.
+    let (outgoing, results) = mpsc::sync_channel::<Outgoing>(MAX_IN_FLIGHT);
+    thread::scope(|scope| {
+        // Moving the receiver in means an exited writer fails further sends
+        // instead of leaving the reader blocked on a full channel.
+        let writer = scope.spawn(move || {
+            let result = send_results(&mut output, &results);
+            ended.store(true, Ordering::Relaxed);
+            result
+        });
+        let read = if receivers.is_empty() {
+            read_frames(
+                primary_frames(&mut ws, &shared, ended),
+                &shared,
+                &tx,
+                &outgoing,
+                quality,
+                scale,
+            )
+        } else {
+            // The primary socket now only signals the end of the session.
+            let watcher = scope.spawn(|| {
+                let result = watch_primary(&mut ws, &shared, ended);
+                ended.store(true, Ordering::Relaxed);
+                result
+            });
+            let read = read_frames(
+                uplink_frames(&receivers, &shared, ended),
+                &shared,
+                &tx,
+                &outgoing,
+                quality,
+                scale,
+            );
+            ended.store(true, Ordering::Relaxed);
+            read.and(
+                watcher
+                    .join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Stream watcher panicked"))),
+            )
+        };
+        drop(outgoing);
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Stream writer panicked")));
+        read.and(written)
+    })
+}
+// Matches extension/src/frame-budget.ts MAX_IN_FLIGHT.
+const MAX_IN_FLIGHT: usize = 4;
+enum Outgoing {
+    Frame {
+        received_wall_ms: f64,
+        dispatch_at: Instant,
+        reply: mpsc::Receiver<Reply>,
+    },
+    Error(String),
+}
+fn wall_ms() -> Result<f64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs_f64()
+        * 1000.)
+}
+fn read_frames(
+    mut next: impl FnMut() -> Result<Option<Bytes>>,
+    shared: &Shared,
+    tx: &mpsc::SyncSender<Job>,
+    outgoing: &mpsc::SyncSender<Outgoing>,
+    quality: u32,
+    scale: f64,
+) -> Result<()> {
     // A decoder belongs to one connection, while the GPU process survives short
     // pauses/seeks. Every new connection must start a fresh prediction chain.
     let mut first_frame = true;
-    let mut last_frame = Instant::now();
-    while !shared.stop.load(Ordering::Relaxed) {
-        // Poll often enough for stop(), but tolerate short capture stalls on
-        // buffered/transitioning players without dropping an authorized stream.
-        let message = match ws.read() {
-            Ok(message) => message,
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && last_frame.elapsed() < Duration::from_secs(15) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error.into()),
+    while let Some(bytes) = next()? {
+        // Reject malformed or oversized frames here. A worker-side
+        // failure restarts the GPU process and forces a cold model load.
+        if let Err(error) =
+            crate::protocol::Frame::parse(&bytes).and_then(|frame| frame.output(scale))
+        {
+            let _ = outgoing.send(Outgoing::Error(format!("{error:#}")));
+            break;
+        }
+        let received_wall_ms = wall_ms()?;
+        let dispatch_at = Instant::now();
+        shared.touch();
+        let (reply, rx) = mpsc::sync_channel(1);
+        let job = Job {
+            bytes,
+            quality,
+            scale,
+            reset: first_frame,
+            reply,
         };
-        match message {
-            Message::Binary(bytes) => {
-                last_frame = Instant::now();
-                let received_wall_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_secs_f64()
-                    * 1000.;
-                let dispatch_at = Instant::now();
-                shared.touch();
-                let (reply, rx) = mpsc::sync_channel(1);
-                let job = Job {
-                    bytes,
-                    quality,
-                    scale,
-                    reset: first_frame,
-                    reply,
-                };
-                if tx.try_send(job).is_err() {
-                    ws.send(Message::text(json!({"type":"error","message":"GPU worker busy; enable again in a moment"}).to_string()))?;
+        first_frame = false;
+        // Blocks only while the GPU thread holds one running and one
+        // queued job; this connection's lease excludes other streams.
+        if tx.send(job).is_err() {
+            let _ = outgoing.send(Outgoing::Error("GPU worker stopped".into()));
+            break;
+        }
+        if outgoing
+            .send(Outgoing::Frame {
+                received_wall_ms,
+                dispatch_at,
+                reply: rx,
+            })
+            .is_err()
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+// Poll often enough for stop(), but tolerate short capture stalls on
+// buffered/transitioning players without dropping an authorized stream.
+const STALL: Duration = Duration::from_secs(15);
+fn timed_out(error: &tungstenite::Error) -> bool {
+    matches!(error, tungstenite::Error::Io(error) if matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ))
+}
+// Frames sent on the primary socket itself; None at the end of the stream.
+fn primary_frames<'a>(
+    ws: &'a mut tungstenite::WebSocket<TcpStream>,
+    shared: &'a Shared,
+    ended: &'a AtomicBool,
+) -> impl FnMut() -> Result<Option<Bytes>> + 'a {
+    let mut last_frame = Instant::now();
+    move || {
+        while !shared.stop.load(Ordering::Relaxed) && !ended.load(Ordering::Relaxed) {
+            match ws.read() {
+                Ok(Message::Binary(bytes)) => {
+                    last_frame = Instant::now();
+                    return Ok(Some(bytes));
+                }
+                Ok(Message::Close(_)) => break,
+                // tungstenite answers pings itself while reading.
+                Ok(Message::Ping(_) | Message::Pong(_)) => {}
+                Ok(_) => bail!("Expected binary video frame"),
+                Err(error) if timed_out(&error) && last_frame.elapsed() < STALL => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(None)
+    }
+}
+// Frames from the uplinks in the extension's round-robin send order, so the
+// encoder's prediction chain sees them exactly as captured.
+fn uplink_frames<'a>(
+    receivers: &'a [mpsc::Receiver<Bytes>],
+    shared: &'a Shared,
+    ended: &'a AtomicBool,
+) -> impl FnMut() -> Result<Option<Bytes>> + 'a {
+    let (mut index, mut last_frame) = (0, Instant::now());
+    move || {
+        while !shared.stop.load(Ordering::Relaxed) && !ended.load(Ordering::Relaxed) {
+            match receivers[index].recv_timeout(Duration::from_millis(500)) {
+                Ok(bytes) => {
+                    index = (index + 1) % receivers.len();
+                    last_frame = Instant::now();
+                    return Ok(Some(bytes));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if last_frame.elapsed() < STALL => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => bail!("No video frame for 15 seconds"),
+                // A closed uplink ends the session, as a closed primary does.
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Ok(None)
+    }
+}
+fn watch_primary(
+    ws: &mut tungstenite::WebSocket<TcpStream>,
+    shared: &Shared,
+    ended: &AtomicBool,
+) -> Result<()> {
+    while !shared.stop.load(Ordering::Relaxed) && !ended.load(Ordering::Relaxed) {
+        match ws.read() {
+            Ok(Message::Close(_)) => break,
+            Ok(Message::Ping(_) | Message::Pong(_)) => {}
+            Ok(_) => bail!("Frames must use the session's uplinks"),
+            Err(error) if timed_out(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+const MAX_UPLINKS: usize = 4;
+// Withdraws unclaimed uplink slots and stops joined uplinks with the session.
+struct UplinkLease<'a>(&'a Shared, &'a str, &'a AtomicBool);
+impl Drop for UplinkLease<'_> {
+    fn drop(&mut self) {
+        self.2.store(true, Ordering::Relaxed);
+        self.0.uplinks.lock().unwrap().remove(self.1);
+    }
+}
+// An upload-only socket joining an authorized session. Each index is claimed
+// once; frames are handed over unparsed and validated by the session reader.
+fn uplink(
+    mut ws: tungstenite::WebSocket<TcpStream>,
+    shared: &Shared,
+    secret: &str,
+    index: Option<u64>,
+) -> Result<()> {
+    let (frames, ended) = {
+        let mut uplinks = shared.uplinks.lock().unwrap();
+        let slot = uplinks
+            .get_mut(secret)
+            .context("Upload session expired; enable enhancement again")?;
+        let frames = index
+            .and_then(|i| slot.senders.get_mut(usize::try_from(i).ok()?))
+            .and_then(Option::take)
+            .context("Invalid or duplicate upload socket")?;
+        (frames, slot.ended.clone())
+    };
+    while !shared.stop.load(Ordering::Relaxed) && !ended.load(Ordering::Relaxed) {
+        match ws.read() {
+            Ok(Message::Binary(bytes)) => {
+                if frames.send(bytes).is_err() {
                     break;
                 }
-                match rx.recv_timeout(Duration::from_secs(30))? {
-                    Ok((bytes, mut stats)) => {
-                        first_frame = false;
-                        stats["response_bytes"] = json!(bytes.len());
-                        stats["received_wall_ms"] = json!(received_wall_ms);
-                        stats["dispatch_ms"] = json!(dispatch_at.elapsed().as_secs_f64() * 1000.);
-                        stats["completed_wall_ms"] = json!(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)?
-                                .as_secs_f64()
-                                * 1000.
-                        );
-                        ws.send(Message::text(stats.to_string()))?;
-                        ws.send(Message::Binary(bytes.into()))?;
-                    }
-                    Err(error) => {
-                        ws.send(Message::text(
-                            json!({"type":"error","message":format!("{error:#}")}).to_string(),
-                        ))?;
-                        break;
-                    }
-                }
             }
-            Message::Close(_) => break,
-            Message::Ping(b) => ws.send(Message::Pong(b))?,
-            _ => bail!("Expected binary video frame"),
+            Ok(Message::Close(_)) => break,
+            Ok(Message::Ping(_) | Message::Pong(_)) => {}
+            Ok(_) => bail!("Expected binary video frame"),
+            Err(error) if timed_out(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+fn send_results(
+    ws: &mut tungstenite::WebSocket<TcpStream>,
+    results: &mpsc::Receiver<Outgoing>,
+) -> Result<()> {
+    let error = |ws: &mut tungstenite::WebSocket<TcpStream>, message: String| {
+        ws.send(Message::text(
+            json!({"type":"error","message":message}).to_string(),
+        ))
+    };
+    // Results arrive in submission order: one GPU thread runs jobs FIFO.
+    for item in results {
+        let (received_wall_ms, dispatch_at, reply) = match item {
+            Outgoing::Frame {
+                received_wall_ms,
+                dispatch_at,
+                reply,
+            } => (received_wall_ms, dispatch_at, reply),
+            Outgoing::Error(message) => {
+                error(ws, message)?;
+                break;
+            }
+        };
+        match reply.recv_timeout(Duration::from_secs(30))? {
+            Ok((bytes, mut stats)) => {
+                stats["response_bytes"] = json!(bytes.len());
+                stats["received_wall_ms"] = json!(received_wall_ms);
+                stats["dispatch_ms"] = json!(dispatch_at.elapsed().as_secs_f64() * 1000.);
+                stats["completed_wall_ms"] = json!(wall_ms()?);
+                ws.send(Message::text(stats.to_string()))?;
+                ws.send(Message::Binary(bytes.into()))?;
+            }
+            Err(e) => {
+                error(ws, format!("{e:#}"))?;
+                break;
+            }
         }
     }
     Ok(())
@@ -524,6 +800,7 @@ mod tests {
     fn grants_are_single_use_expiring_and_bounded() {
         let s = Shared {
             grants: Mutex::new(HashMap::new()),
+            uplinks: Mutex::new(HashMap::new()),
             last: Mutex::new(Instant::now()),
             stop: AtomicBool::new(false),
             streaming: AtomicBool::new(false),

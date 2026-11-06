@@ -4,8 +4,10 @@ import { VsrPresentationClock } from './presentation-clock.ts';
 import { DEFAULTS } from './policy.ts';
 import { request } from './messaging.ts';
 import { planOutput } from './resolution.ts';
-import { captureCapacity, MAX_IN_FLIGHT } from './frame-budget.ts';
+import { captureCapacity } from './frame-budget.ts';
 import { captureFormat } from './capture-format.ts';
+import { CapturePacer } from './capture-pacer.ts';
+import { CONVERTED_NV12, createNv12Converter, type Nv12Converter } from './nv12-converter.ts';
 import { createVideoOverlay, type VideoOverlay } from './video-overlay.ts';
 import { StartupWatchdog } from './startup-watchdog.ts';
 import type { Policy, PlaybackState, PlaybackStatus, FrameMessage } from './protocol.ts';
@@ -27,7 +29,8 @@ interface Session {
   port?: MessagePort;
   overlay?: VideoOverlay;
   ready?: boolean;
-  buffers: ArrayBuffer[];
+  frameBytes: number;
+  pacer: CapturePacer;
   pausedAt?: number;
   resumingAt?: number;
 }
@@ -157,7 +160,8 @@ interface Session {
       callback: 0,
       startup: new StartupWatchdog(Date.now()),
       lastPresented: 0,
-      buffers: [],
+      frameBytes: 0,
+      pacer: new CapturePacer(),
     };
     session = s;
     state(
@@ -206,8 +210,7 @@ interface Session {
           capture(s);
         }
         if (data.type === 'available') s.pending = Math.max(0, s.pending - 1);
-        if (data.type === 'recycle' && s.buffers.length < MAX_IN_FLIGHT)
-          s.buffers.push(data.buffer);
+        if (data.type === 'decoded') s.pacer.start(performance.now());
         if (data.type === 'decoded' && !v.paused) {
           s.startup.progress('sync', Date.now());
           audio.update(data.ageMs);
@@ -245,6 +248,7 @@ interface Session {
             dropped: data.dropped,
             presented: data.presented,
             latenessMs: data.latenessMs,
+            capture: { stride: s.pacer.stride, missed: s.pacer.missed },
             startupMs: data.startupMs,
             audio: audio.stats(),
             timings: data.stats,
@@ -301,14 +305,20 @@ interface Session {
       }
       clock.observe(metadata, s.video.playbackRate, s.video.currentTime, now);
       sendClock(s);
-      if (s.pending < MAX_IN_FLIGHT && s.ready) {
+      // While the pipeline is full, skip VideoFrame creation entirely; the
+      // previous capture's size predicts the bound for this source.
+      if (
+        s.ready &&
+        s.pacer.due(metadata.presentedFrames, s.pending < captureCapacity(s.frameBytes), now)
+      ) {
         let frame: VideoFrame | undefined;
         try {
           frame = new VideoFrame(s.video, {
             timestamp: Math.round(metadata.mediaTime * 1e6),
           });
           const bytes =
-            32 + frame.displayWidth * frame.displayHeight * (captureFormat(frame) === 0 ? 4 : 1.5);
+            32 + frame.displayWidth * frame.displayHeight * (planFormat(frame) === 0 ? 4 : 1.5);
+          s.frameBytes = bytes;
           if (s.pending < captureCapacity(bytes)) {
             s.pending++;
             copyFrame(s, frame, metadata.mediaTime);
@@ -325,6 +335,14 @@ interface Session {
       capture(s);
     });
   }
+  // Created on first RGB capture; null after it proved unavailable.
+  let converter: Nv12Converter | null | undefined;
+  function planFormat(frame: VideoFrame) {
+    const format = captureFormat(frame);
+    if (format !== 0) return format;
+    if (converter === undefined) converter = createNv12Converter();
+    return converter?.supports(frame) ? CONVERTED_NV12 : 0;
+  }
   async function copyFrame(s: Session, frame: VideoFrame, timestamp: number) {
     const copyAt = performance.now();
     const sequence = ++s.sequence;
@@ -334,22 +352,35 @@ interface Session {
       // resulting ArrayBuffer. Inference, decoding and drawing stay in workers.
       const w = frame.displayWidth,
         h = frame.displayHeight;
-      const format = captureFormat(frame);
-      const nv12 = format !== 0;
-      const size = nv12 ? (w * h * 3) / 2 : w * h * 4;
-      const recycled = s.buffers.pop();
-      const buffer = recycled?.byteLength === 32 + size ? recycled : new ArrayBuffer(32 + size);
-      const options: VideoFrameCopyToOptions = nv12
-        ? {
-            // Already NV12. Brave rejects an explicit non-RGB conversion
-            // request even when it matches the source format.
-            layout: [
-              { offset: 0, stride: w },
-              { offset: w * h, stride: w },
-            ],
-          }
-        : { format: 'RGBA', layout: [{ offset: 0, stride: w * 4 }], colorSpace: 'srgb' };
-      await frame.copyTo(new Uint8Array(buffer, 32), options);
+      let format = planFormat(frame);
+      const take = (size: number) => new ArrayBuffer(32 + size);
+      let buffer = take(format === 0 ? w * h * 4 : (w * h * 3) / 2);
+      if (format === CONVERTED_NV12) {
+        try {
+          await converter!.convert(frame, new Uint8Array(buffer, 32));
+        } catch {
+          // A lost/unsupported GL context only costs bandwidth: fall back to
+          // RGBA for the rest of this page rather than failing playback.
+          converter?.close();
+          converter = null;
+          format = 0;
+          buffer = take(w * h * 4);
+        }
+      }
+      if (format !== CONVERTED_NV12) {
+        const options: VideoFrameCopyToOptions =
+          format !== 0
+            ? {
+                // Already NV12. Brave rejects an explicit non-RGB conversion
+                // request even when it matches the source format.
+                layout: [
+                  { offset: 0, stride: w },
+                  { offset: w * h, stride: w },
+                ],
+              }
+            : { format: 'RGBA', layout: [{ offset: 0, stride: w * 4 }], colorSpace: 'srgb' };
+        await frame.copyTo(new Uint8Array(buffer, 32), options);
+      }
       if (session !== s) return;
       if (s.video.paused) {
         s.pending = Math.max(0, s.pending - 1);
@@ -512,8 +543,11 @@ interface Session {
         video?.controls &&
         (event.target === video || video.parentElement?.contains(event.target as Node | null))
       ) {
+        // Pointer events arrive at display rate. Reconcile (layout/style reads)
+        // only when controls first appear; the 100 ms loop handles expiry.
+        const entering = Date.now() >= hoverUntil;
         hoverUntil = Date.now() + 1800;
-        reconcile();
+        if (entering) reconcile();
       }
     },
     { passive: true },

@@ -32,19 +32,24 @@ export function createVideoOverlay(video: HTMLVideoElement, url: string): VideoO
   element.style.cssText = `position:absolute;pointer-events:none;border:0;margin:0;padding:0;opacity:0;z-index:${z + 1};background:transparent;`;
   element.src = url;
   parent.append(element);
-  let closed = false;
+  let closed = false,
+    placed = '';
   return {
     element,
     position() {
       if (closed || !element.isConnected || !video.isConnected) return;
       const v = video.getBoundingClientRect(),
         p = parent.getBoundingClientRect();
-      Object.assign(element.style, {
-        left: `${v.left - p.left + parent.scrollLeft - parent.clientLeft}px`,
-        top: `${v.top - p.top + parent.scrollTop - parent.clientTop}px`,
-        width: `${v.width}px`,
-        height: `${v.height}px`,
-      });
+      const left = `${v.left - p.left + parent.scrollLeft - parent.clientLeft}px`,
+        top = `${v.top - p.top + parent.scrollTop - parent.clientTop}px`,
+        width = `${v.width}px`,
+        height = `${v.height}px`,
+        next = `${left} ${top} ${width} ${height}`;
+      // Called ten times per second. Unchanged writes still dirty the page's
+      // style and can push layout work into the player's frame deadline.
+      if (next === placed) return;
+      placed = next;
+      Object.assign(element.style, { left, top, width, height });
     },
     close() {
       if (closed) return;

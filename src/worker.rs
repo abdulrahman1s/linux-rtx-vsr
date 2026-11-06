@@ -58,9 +58,15 @@ impl GpuProcess {
             .stderr(Stdio::inherit())
             .spawn()
             .context("Cannot start the Rust GPU worker")?;
+        let output = child.stdout.take().unwrap();
+        // 4K AV1 keyframes are megabytes; a 64 KiB pipe needs dozens of
+        // writer/reader wakeups per packet. 1 MiB is the unprivileged default
+        // limit; on failure the default pipe still works, only slower.
+        // SAFETY: valid owned pipe descriptor; F_SETPIPE_SZ takes an int size.
+        unsafe { libc::fcntl(output.as_raw_fd(), libc::F_SETPIPE_SZ, 1 << 20) };
         Ok(Self {
             input: child.stdin.take().unwrap(),
-            output: child.stdout.take().unwrap(),
+            output,
             child,
             frame,
         })

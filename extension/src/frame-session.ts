@@ -10,24 +10,61 @@ import type {
   FrameMetadata,
   FrameMessage,
   CaptureMessage,
+  UplinkMessage,
 } from './protocol.ts';
+// Upload-only sockets, each on its own worker thread; see uplink-worker.ts.
+// Three sustain ~300 MB/s on the measured host, 1.6× 1080p60 NV12.
+const UPLINKS = 3;
+export interface Uplink {
+  send(buffer: ArrayBuffer): void;
+  close(): void;
+}
+export interface UplinkEvents {
+  open(): void;
+  fail(): void;
+}
 export interface FrameEnvironment {
   now(): number;
-  schedule(callback: () => void): () => void;
+  // frameTime is the display frame's start on the now() timeline, if known.
+  schedule(callback: (frameTime?: number) => void): () => void;
   connect(url: string): WebSocket;
+  // Absent where workers cannot nest; frames then share the primary socket.
+  createUplink?(
+    url: string,
+    hello: { uplink: string; index: number },
+    events: UplinkEvents,
+  ): Uplink;
   createDecoder(): PacketDecoder;
 }
 const browser: FrameEnvironment = {
   now: () => performance.timeOrigin + performance.now(),
   schedule: (callback) => {
     if (typeof requestAnimationFrame === 'function') {
-      const handle = requestAnimationFrame(callback);
+      const handle = requestAnimationFrame((at) => callback(performance.timeOrigin + at));
       return () => cancelAnimationFrame(handle);
     }
     const handle = setTimeout(callback, 8);
     return () => clearTimeout(handle);
   },
   connect: (url) => new WebSocket(url),
+  createUplink:
+    typeof Worker === 'function'
+      ? (url, hello, events) => {
+          const worker = new Worker(new URL('uplink-worker.js', self.location.href), {
+            type: 'module',
+          });
+          worker.onmessage = ({ data }) => (data === 'open' ? events.open() : events.fail());
+          worker.onerror = () => events.fail();
+          const post = (message: UplinkMessage, transfer: Transferable[] = []) =>
+            worker.postMessage(message, transfer);
+          post({ type: 'open', url, hello });
+          return {
+            // Same-process transfer: the buffer moves without a copy.
+            send: (buffer) => post({ type: 'frame', buffer }, [buffer]),
+            close: () => worker.terminate(),
+          };
+        }
+      : undefined,
   createDecoder: createPacketDecoder,
 };
 // Owns transport, bounded decode queue, fresh presentation and cancellation.
@@ -54,6 +91,8 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
   const started = now();
   let lastTick = started,
     cancelTick = () => {};
+  let uplinks: Uplink[] = [],
+    sentFrames = 0;
   function send(value: FrameMessage) {
     port?.postMessage(value);
   }
@@ -73,17 +112,29 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
     flush();
     inFlight.clear();
     decoder.close();
+    for (const uplink of uplinks) uplink.close();
     ws?.close();
   }
   port.onmessage = receive;
   port.start();
-  ws = env.connect(`ws://127.0.0.1:${auth.port}/v1/stream`);
+  const url = `ws://127.0.0.1:${auth.port}/v1/stream`;
+  ws = env.connect(url);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({ token: auth.token, quality, scale, protocol: 3 }));
+  ws.onopen = () =>
+    ws.send(
+      JSON.stringify({
+        token: auth.token,
+        quality,
+        scale,
+        protocol: 3,
+        uplinks: env.createUplink ? UPLINKS : 0,
+      }),
+    );
+  const disconnected = () =>
+    fail('Engine disconnected. The original video is playing; enable again to retry.', true);
   ws.onerror = () => fail('Cannot connect to the local engine. Run linux-rtx-vsr doctor.', true);
   ws.onclose = () => {
-    if (!stopped)
-      fail('Engine disconnected. The original video is playing; enable again to retry.', true);
+    if (!stopped) disconnected();
   };
   ws.onmessage = async (event) => {
     if (typeof event.data === 'string') {
@@ -94,8 +145,25 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
             throw new Error(
               'Streaming protocol changed; update the native application and extension together',
             );
-          ready = true;
-          send({ type: 'ready' });
+          // An older engine ignores the uplink request and reads frames here.
+          if (typeof value.uplink === 'string' && env.createUplink) {
+            let open = 0;
+            const events = {
+              open: () => {
+                if (++open < UPLINKS || stopped) return;
+                ready = true;
+                send({ type: 'ready' });
+              },
+              fail: () => {
+                if (!stopped) disconnected();
+              },
+            };
+            for (let index = 0; index < UPLINKS; index++)
+              uplinks.push(env.createUplink(url, { uplink: value.uplink, index }, events));
+          } else {
+            ready = true;
+            send({ type: 'ready' });
+          }
         } else if (value.type === 'error') fail(value.message);
         else if (value.type === 'frame') pending = value;
       } catch (error) {
@@ -186,7 +254,6 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
       stopped ||
       value.epoch !== epoch
     ) {
-      sendRecycle(value.buffer);
       send({ type: 'available' });
       return;
     }
@@ -198,20 +265,28 @@ export function startFrameSession(init: WorkerInit, env: FrameEnvironment = brow
         captureMs: value.captureMs,
         handoffMs: value.copiedAt === undefined ? 0 : Math.max(0, sentAt - value.copiedAt),
       });
-      ws.send(value.buffer);
-      sendRecycle(value.buffer);
+      // Never post the buffer back for reuse: the page and extension are
+      // separate processes, so a "transfer" is another full frame copy on
+      // the same port, competing with captures for scarce IPC bandwidth.
+      // The engine reads uplinks back in this round-robin order.
+      if (uplinks.length) uplinks[sentFrames++ % uplinks.length].send(value.buffer);
+      else ws.send(value.buffer);
     } catch (error) {
       inFlight.delete(value.sequence);
       fail(`Cannot capture this video: ${errorMessage(error)}`);
     }
   }
-  function sendRecycle(buffer: ArrayBuffer) {
-    port.postMessage({ type: 'recycle', buffer }, [buffer]);
-  }
-  function tick() {
+  function tick(frameTime?: number) {
     if (stopped) return;
     cancelTick();
-    const time = now();
+    const current = now();
+    // Choose pictures against the vsync timestamp, not callback start: worker
+    // scheduling jitter near a frame boundary otherwise alternates a dropped
+    // and a repeated picture. A callback delayed past a refresh uses now().
+    const time =
+      frameTime !== undefined && current - frameTime >= 0 && current - frameTime < 20
+        ? frameTime
+        : current;
     lastTick = time;
     if (clock && clock.rate > 0 && time - clock.at < 500) {
       const audible = clock.media + ((time - clock.at) * clock.rate) / 1000;
